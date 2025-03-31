@@ -33,7 +33,7 @@ func main() {
 
 func handler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, "Hello, World!")
-	log.Default().Println("Request received")
+	log.Default().Println("Hello, World!")
 }
 
 func getUsers(w http.ResponseWriter, r *http.Request) {
