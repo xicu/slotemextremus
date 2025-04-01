@@ -60,7 +60,7 @@ export default function Game() {
   const currentSquares = history[currentMove];
 
   useEffect(() => {
-    const socket = new WebSocket('ws://localhost:8080/socket'); // Replace with your WebSocket URL
+    const socket = new WebSocket('ws://localhost:8080/ws'); // Replace with your WebSocket URL
 
     socket.onmessage = (event) => {
       console.log('WebSocket message received:', event.data); // Print the message to the console
