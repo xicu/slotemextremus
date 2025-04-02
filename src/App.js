@@ -1,131 +1,92 @@
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import './styles.css';
 
-function Square({ value, onSquareClick }) {
+function Chrono({ time }) {
+  const formatTime = (ms) => {
+    const minutes = Math.floor(ms / 60000);
+    const seconds = Math.floor((ms % 60000) / 1000);
+    const milliseconds = ms % 1000;
+    return `${minutes}:${seconds.toString().padStart(2, '0')}:${milliseconds.toString().padStart(3, '0')}`;
+  };
+
   return (
-    <button className="square" onClick={onSquareClick}>
-      {value}
-    </button>
+    <div className="chrono">
+      <h2>{formatTime(time)}</h2>
+    </div>
   );
 }
 
-function Board({ xIsNext, squares, onPlay }) {
-  function handleClick(i) {
-    if (calculateWinner(squares) || squares[i]) {
-      return;
-    }
-    const nextSquares = squares.slice();
-    if (xIsNext) {
-      nextSquares[i] = 'X';
-    } else {
-      nextSquares[i] = 'O';
-    }
-    onPlay(nextSquares);
-  }
-
-  const winner = calculateWinner(squares);
-  let status;
-  if (winner) {
-    status = 'Winner: ' + winner;
-  } else {
-    status = 'Next player: ' + (xIsNext ? 'X' : 'O');
-  }
-
-  return (
-    <>
-      <div className="status">{status}</div>
-      <div className="board-row">
-        <Square value={squares[0]} onSquareClick={() => handleClick(0)} />
-        <Square value={squares[1]} onSquareClick={() => handleClick(1)} />
-        <Square value={squares[2]} onSquareClick={() => handleClick(2)} />
-      </div>
-      <div className="board-row">
-        <Square value={squares[3]} onSquareClick={() => handleClick(3)} />
-        <Square value={squares[4]} onSquareClick={() => handleClick(4)} />
-        <Square value={squares[5]} onSquareClick={() => handleClick(5)} />
-      </div>
-      <div className="board-row">
-        <Square value={squares[6]} onSquareClick={() => handleClick(6)} />
-        <Square value={squares[7]} onSquareClick={() => handleClick(7)} />
-        <Square value={squares[8]} onSquareClick={() => handleClick(8)} />
-      </div>
-    </>
-  );
-}
-
-export default function Game() {
-  const [history, setHistory] = useState([Array(9).fill(null)]);
-  const [currentMove, setCurrentMove] = useState(0);
-  const [message, setMessage] = useState(''); // State to store WebSocket messages
-  const xIsNext = currentMove % 2 === 0;
-  const currentSquares = history[currentMove];
+function App() {
+  const [chrono1Time, setChrono1Time] = useState(0);
+  const [chrono2Time, setChrono2Time] = useState(0);
+  const [start1, setStart1] = useState(null);
+  const [start2, setStart2] = useState(null);
+  const ws = useRef(null);
 
   useEffect(() => {
-    const socket = new WebSocket('ws://localhost:8080/ws'); // Replace with your WebSocket URL
+    ws.current = new WebSocket('ws://localhost:8080/ws');
 
-    socket.onmessage = (event) => {
-      console.log('WebSocket message received:', event.data); // Print the message to the console
-      setMessage(event.data); // Update message state when a new message is received
-      //setMessage(Date().toISOString())
+    ws.current.onmessage = (e) => {
+      const message = e.data;
+      const now = Date.now();
+
+      if (message === '1') {
+        setStart1(now);
+        setChrono1Time(0);
+      } else if (message === '2') {
+        setStart2(now);
+        setChrono2Time(0);
+      }
     };
 
     return () => {
-      socket.close(); // Clean up WebSocket connection on component unmount
+      if (ws.current) ws.current.close();
     };
   }, []);
 
-  function handlePlay(nextSquares) {
-    const nextHistory = [...history.slice(0, currentMove + 1), nextSquares];
-    setHistory(nextHistory);
-    setCurrentMove(nextHistory.length - 1);
-  }
-
-  function jumpTo(nextMove) {
-    setCurrentMove(nextMove);
-  }
-
-  const moves = history.map((squares, move) => {
-    let description;
-    if (move > 0) {
-      description = 'Go to move #' + move;
-    } else {
-      description = 'Go to game start';
+  useInterval(() => {
+    if (start1 !== null) {
+      const elapsed = Date.now() - start1;
+      setChrono1Time(elapsed);
     }
-    return (
-      <li key={move}>
-        <button onClick={() => jumpTo(move)}>{description}</button>
-      </li>
-    );
-  });
+  }, 10);
+
+  useInterval(() => {
+    if (start2 !== null) {
+      const elapsed = Date.now() - start2;
+      setChrono2Time(elapsed);
+    }
+  }, 10);
 
   return (
-    <div className="game">
-      <div className="game-board">
-        <Board xIsNext={xIsNext} squares={currentSquares} onPlay={handlePlay} />
-      </div>
-      <div className="game-info">
-        <ol>{moves}</ol>
-        <div className="websocket-message">Message: {message}</div> {/* Display WebSocket message */}
+    <div className="App">
+      <h1>Slotem Extremus</h1>
+      <div className="chrono-container">
+        <Chrono time={chrono1Time} />
+        <Chrono time={chrono2Time} />
       </div>
     </div>
   );
 }
 
-function calculateWinner(squares) {
-  const lines = [
-    [0, 1, 2],
-    [3, 4, 5],
-    [6, 7, 8],
-    [0, 3, 6],
-    [1, 4, 7],
-    [2, 5, 8],
-    [0, 4, 8],
-    [2, 4, 6],
-  ];
-  for (let i = 0; i < lines.length; i++) {
-    const [a, b, c] = lines[i];
-    if (squares[a] && squares[a] === squares[b] && squares[a] === squares[c]) {
-      return squares[a];
+// Custom hook for intervals
+function useInterval(callback, delay) {
+  const savedCallback = useRef();
+
+  useEffect(() => {
+    savedCallback.current = callback;
+  }, [callback]);
+
+  useEffect(() => {
+    function tick() {
+      savedCallback.current();
     }
-  }
-  return null;
+    if (delay !== null) {
+      let id = setInterval(tick, delay);
+      return () => clearInterval(id);
+    }
+  }, [delay]);
 }
+
+export default App;
+
