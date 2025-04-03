@@ -24,7 +24,9 @@ function App() {
   const ws = useRef(null);
 
   useEffect(() => {
-    ws.current = new WebSocket('ws://localhost:8080/ws');
+    // This socket will work as long as backend and frontend are hosted in the same machine.
+    // To host them in different machines, consider mDNS or similar.
+    ws.current = new WebSocket(`ws://${window.location.hostname}:8080/ws`);
 
     ws.current.onmessage = (e) => {
       const message = e.data;
