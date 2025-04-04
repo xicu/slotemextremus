@@ -2,5 +2,5 @@
 Frontend for Slotem Extremus
 
 npm install (--force)
-npm run build
-npm start
+npm run build for prod
+npm start for dev
