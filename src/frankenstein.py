@@ -1,6 +1,8 @@
 import cv2
 import numpy as np
 
+from datetime import datetime
+
 from picamera2 import Picamera2
 
 
@@ -11,7 +13,7 @@ MIN_CONFIDENCE = 0.4  # Tracker confidence threshold
 COOLDOWN_FRAMES = 15  # Prevent duplicate alerts
 
 # Initialize
-cv2.startWindowThread()
+#cv2.startWindowThread()
 
 picam2 = Picamera2()
 # picam2.configure(picam2.create_preview_configuration(main={"format": 'XRGB8888', "size": (640, 480)}))
@@ -44,8 +46,19 @@ def init_tracker(frame, bbox):
     tracker.init(frame, bbox)
     return tracker
 
+timestamp = datetime.now()
+framecounter = 0
+
+# Main loop
 while True:
+    current_time = datetime.now()
+    if (current_time - timestamp).seconds >= 1:
+        timestamp = current_time
+        print(f"INFO: FPS: {framecounter}")
+        framecounter = 0
+
     frame = picam2.capture_array()
+    framecounter += 1
     # print("DEBUG: Frame shape:", frame.shape)
 
     # Cooldown counter
@@ -115,7 +128,7 @@ while True:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
         alert_active = False
 
-    cv2.imshow("Fast Object Tracking", frame)
+#    cv2.imshow("Fast Object Tracking", frame)
     
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
