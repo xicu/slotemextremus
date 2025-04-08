@@ -4,7 +4,12 @@ import numpy as np
 from datetime import datetime
 
 from picamera2 import Picamera2
+import requests
 
+target_ip = "192.168.50.179"
+port = 8080
+endpoint = "/lap/1"
+url = f"http://{target_ip}:{port}{endpoint}"
 
 # Configuration
 LINE_Y = 300         # Horizontal line position
@@ -13,11 +18,11 @@ MIN_CONFIDENCE = 0.4  # Tracker confidence threshold
 COOLDOWN_FRAMES = 15  # Prevent duplicate alerts
 
 # Initialize
-#cv2.startWindowThread()
+showWindow = True
+showWindow and cv2.startWindowThread();
 
 picam2 = Picamera2()
-# picam2.configure(picam2.create_preview_configuration(main={"format": 'XRGB8888', "size": (640, 480)}))
-picam2.configure(picam2.create_preview_configuration(main={"format": 'RGB888', "size": (640, 480)}))
+picam2.configure(picam2.create_preview_configuration(main={"format": 'BGR888', "size": (480, 480)}))
 picam2.start()
 
 tracker = None
@@ -92,6 +97,14 @@ while True:
                     alert_active = True
                     cooldown = COOLDOWN_FRAMES
                     print(f"ALERT: Object crossed line moving {direction}")
+
+                    try:
+                        response = requests.post(url)
+                        response.raise_for_status()
+                        # print("Response:", response.json())
+                    except requests.exceptions.RequestException as e:
+                        print(f"Request failed: {e}")
+
         else:
             # Lost tracking, reset
             tracker = None
@@ -128,7 +141,7 @@ while True:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
         alert_active = False
 
-#    cv2.imshow("Fast Object Tracking", frame)
+    showWindow and cv2.imshow("Fast Object Tracking", frame)
     
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
