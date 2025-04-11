@@ -46,12 +46,14 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	connections.Lock()
 	connections.conns[conn] = true
 	connections.Unlock()
+	log.Printf("Client connected: %s", conn.RemoteAddr())
 
 	// Remove connection when closed
 	defer func() {
 		connections.Lock()
 		delete(connections.conns, conn)
 		connections.Unlock()
+		log.Printf("Client disconnected: %s", conn.RemoteAddr())
 	}()
 
 	// Keep connection alive
