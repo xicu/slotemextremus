@@ -21,7 +21,16 @@ function App() {
   const [chrono2Time, setChrono2Time] = useState(0);
   const [start1, setStart1] = useState(null);
   const [start2, setStart2] = useState(null);
+  const [history, setHistory] = useState([]); // State to store the history
   const ws = useRef(null);
+  const chrono1Ref = useRef(chrono1Time); // Ref to store the latest chrono1Time
+  const chrono2Ref = useRef(chrono2Time); // Ref to store the latest chrono2Time
+
+  // Update refs whenever the state changes
+  useEffect(() => {
+    chrono1Ref.current = chrono1Time;
+    chrono2Ref.current = chrono2Time;
+  }, [chrono1Time, chrono2Time]);
 
   useEffect(() => {
     // This socket will work as long as backend and frontend are hosted in the same machine.
@@ -33,9 +42,11 @@ function App() {
       const now = Date.now();
 
       if (message === '1') {
+        setHistory((prev) => [{ chrono1: chrono1Ref.current, chrono2: null }, ...prev]); // Use ref for chrono1Time
         setStart1(now);
         setChrono1Time(0);
       } else if (message === '2') {
+        setHistory((prev) => [{ chrono1: null, chrono2: chrono2Ref.current }, ...prev]); // Use ref for chrono2Time
         setStart2(now);
         setChrono2Time(0);
       }
@@ -44,7 +55,7 @@ function App() {
     return () => {
       if (ws.current) ws.current.close();
     };
-  }, []);
+  }, []); // Empty dependency array to ensure WebSocket is initialized only once
 
   useInterval(() => {
     if (start1 !== null) {
@@ -67,6 +78,22 @@ function App() {
         <Chrono time={chrono1Time} />
         <Chrono time={chrono2Time} />
       </div>
+      <table className="history-table">
+        <thead>
+          <tr>
+            <th>Chrono 1</th>
+            <th>Chrono 2</th>
+          </tr>
+        </thead>
+        <tbody>
+          {history.map((entry, index) => (
+            <tr key={index}>
+              <td>{entry.chrono1 !== null ? entry.chrono1 : '-'}</td>
+              <td>{entry.chrono2 !== null ? entry.chrono2 : '-'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
