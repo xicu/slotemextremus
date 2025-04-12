@@ -5,6 +5,8 @@ import numpy as np
 from picamera2 import Picamera2
 import time
 
+import psutil
+
 app = Flask(__name__)
 
 # Globals
@@ -74,6 +76,14 @@ def init_tracker(frame, bbox):
     t.init(frame, bbox)
     return t
 
+def get_cpu_temp():
+    try:
+        with open("/sys/class/thermal/thermal_zone0/temp", "r") as f:
+            temp = int(f.read()) / 1000
+            return temp
+    except FileNotFoundError:
+        return None
+
 # Camera setup
 picam2 = Picamera2()
 picam2.configure(picam2.create_preview_configuration(main={"format": 'RGB888', "size": (640, 480)}))
@@ -83,7 +93,16 @@ def capture_frames():
     global output_frame, tracker, cooldown, alert_active
     global crossing_history, reset_tracker_flag, recalibrate_flag, direction, new_tracker_type, TRACKER_TYPE
 
-    prev_time = time.time()
+    prev_frame_time = time.time()       # For FPS calculation
+    prev_monitoring_time = time.time()  # For system monitoring
+    psutil.cpu_percent(interval=0, percpu=True)
+    global cpu_usage_text
+    cpu_usage_text = "Calculating..."
+    global cpu_temp_text
+    cpu_temp_text = "0"
+    global mem_usage_text
+    mem_usage_text = "0"
+
     fps = 0
 
     while True:
@@ -168,20 +187,37 @@ def capture_frames():
             alert_active = False
 
         # FPS
-        curr_time = time.time()
-        fps = 1.0 / (curr_time - prev_time)
-        prev_time = curr_time
+        curr_frame_time = time.time()
+        fps = 1.0 / (curr_frame_time - prev_frame_time)
+        prev_frame_time = curr_frame_time
+        fps_text = f"FPS: {fps:.2f}"
+
+        # System Monitoring updates every 2 seconds
+        if time.time() - prev_monitoring_time > 2:
+            prev_monitoring_time = time.time()
+            total_cpu = psutil.cpu_percent(interval=0)
+            per_cpu = psutil.cpu_percent(interval=0, percpu=True)
+            per_cpu_str = ", ".join(f"{usage:.1f}" for usage in per_cpu)
+            cpu_usage_text = f"CPU: {total_cpu:.1f}% ({per_cpu_str})"
+            cpu_temp_text = f"CPU temp: {get_cpu_temp():.1f} C" if get_cpu_temp() else "CPU temp: N/A"
+            memory = psutil.virtual_memory()
+            mem_usage_text = f"Memory: {memory.percent:.1f}% ({memory.used // (1024 * 1024)} MB / {memory.total // (1024 * 1024)} MB)"
 
         status_text = f"Tracking: {direction if tracker else 'None'}"
-        fps_text = f"FPS: {fps:.2f}"
         tracker_name_text = f"Tracker: {TRACKER_TYPE}"
 
 
-        cv2.putText(frame, status_text, (10, 60),
+        cv2.putText(frame, status_text, (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
-        cv2.putText(frame, fps_text, (10, 90),
+        cv2.putText(frame, fps_text, (10, 60),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
-        cv2.putText(frame, tracker_name_text, (10, 120),
+        cv2.putText(frame, tracker_name_text, (10, 90),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+        cv2.putText(frame, cpu_usage_text, (10, 120),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+        cv2.putText(frame, cpu_temp_text, (10, 150),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+        cv2.putText(frame, mem_usage_text, (10, 180),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
 
         # Output to stream
