@@ -81,7 +81,7 @@ picam2.start()
 
 def capture_frames():
     global output_frame, tracker, cooldown, alert_active
-    global crossing_history, reset_tracker_flag, recalibrate_flag, direction
+    global crossing_history, reset_tracker_flag, recalibrate_flag, direction, new_tracker_type, TRACKER_TYPE
 
     prev_time = time.time()
     fps = 0
@@ -89,17 +89,27 @@ def capture_frames():
     while True:
         frame = picam2.capture_array()
 
+        # Handle Tracker Reset
         if reset_tracker_flag:
             tracker = None
             crossing_history.clear()
             print("INFO: Tracker has been reset from web UI")
             reset_tracker_flag = False
 
+        # Handle Background Recalibration
         if recalibrate_flag:
             if hasattr(init_tracker, 'avg'):
                 del init_tracker.avg
             print("INFO: Background recalibration triggered from web UI")
             recalibrate_flag = False
+
+        # Handle Tracker Change
+        if new_tracker_type and new_tracker_type != TRACKER_TYPE:
+            print(f"INFO: Switching tracker from {TRACKER_TYPE} to {new_tracker_type}")
+            TRACKER_TYPE = new_tracker_type  # Update the global tracker type
+            new_tracker_type = None
+            tracker = None
+            crossing_history.clear()
 
         if cooldown > 0:
             cooldown -= 1
