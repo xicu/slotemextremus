@@ -25,6 +25,10 @@ tracker = None
 crossing_history = []
 direction = "N/A"
 
+# Desktop window
+showWindow = False
+showWindow and cv2.startWindowThread();
+
 # HTML page
 HTML_PAGE = """
 <!doctype html>
@@ -173,6 +177,9 @@ def capture_frames():
         # Output to stream
         with lock:
             output_frame = frame.copy()
+
+        showWindow and cv2.imshow("Fast Object Tracking", frame)
+
 
 def generate_stream():
     global output_frame
