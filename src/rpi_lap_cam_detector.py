@@ -139,9 +139,9 @@ def get_throttling_status():
 
 def get_cpu_freq():
     try:
-        # Get the current CPU frequency from /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq
-        with open("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq", "r") as f:
-            current_freq = int(f.read()) / 1000  # in MHz
+        # Try using vcgencmd for Raspberry Pi's CPU actual (capped) frequency
+        out = subprocess.check_output(['vcgencmd', 'measure_clock', 'arm']).decode()
+        cpu_freq = int(out.strip().split('=')[1]) / 1000000  # Convert Hz to MHz
 
         # Get the maximum frequency using psutil
         per_cpu = psutil.cpu_freq(percpu=True)
@@ -150,7 +150,7 @@ def get_cpu_freq():
         # Get the nominal (max) frequency from the first core (assuming all cores have the same nominal)
         max_freq = per_cpu[0].max  # in MHz
         
-        return f"Current: {current_freq:.0f} MHz, Max: {max_freq} MHz"
+        return f"{cpu_freq:.0f} / {max_freq} MHz"
     except Exception as e:
         return f"Error: {e}"
 
