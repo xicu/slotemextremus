@@ -30,11 +30,9 @@ tracker = None
 crossing_history = []
 direction = "N/A"
 
-cpu_usage_text = "Calculating..."
-cpu_temp_text = "N/A"
-cpu_freqs_text = "0"
-mem_usage_text = "0"
-throttling_status_text = "Checking..."
+TRACKER_TYPE = None  # Will be set later
+last_status_time = 0
+last_status_result = {}
 
 # === Flask HTML Template ===
 HTML_PAGE = """
@@ -60,11 +58,11 @@ HTML_PAGE = """
 <button onclick="fetch('/recalibrate')">Recalibrate Background</button>
 
 <h2>System Info:</h2>
-<p><strong>CPU Usage:</strong> <span id="cpuUsage">{{ cpu_usage }}</span></p>
-<p><strong>CPU Temperature:</strong> <span id="cpuTemp">{{ cpu_temp }}</span></p>
-<p><strong>CPU Frequency:</strong> <span id="cpuFreq">{{ cpu_freq }}</span></p>
-<p><strong>Memory Usage:</strong> <span id="memUsage">{{ mem_usage }}</span></p>
-<p><strong>Throttle Status:</strong> <span id="throttlingStatus">{{ throttling_status }}</span></p>
+<p><strong>CPU Usage:</strong> <span id="cpuUsage">Calculating...</span></p>
+<p><strong>CPU Temperature:</strong> <span id="cpuTemp">N/A</span></p>
+<p><strong>CPU Frequency:</strong> <span id="cpuFreq">0</span></p>
+<p><strong>Memory Usage:</strong> <span id="memUsage">0</span></p>
+<p><strong>Throttle Status:</strong> <span id="throttlingStatus">Checking...</span></p>
 
 <script>
 function setTracker(value) {
@@ -110,7 +108,7 @@ def init_tracker(frame, bbox):
     t.init(frame, bbox)
     return t
 
-# === System Info Functions ===
+# === System Info Helpers ===
 def get_cpu_temp():
     try:
         with open("/sys/class/thermal/thermal_zone0/temp", "r") as f:
@@ -139,32 +137,13 @@ def get_throttling_status():
 
 def get_cpu_freq():
     try:
-        # Try using vcgencmd for Raspberry Pi's CPU actual (capped) frequency
         out = subprocess.check_output(['vcgencmd', 'measure_clock', 'arm']).decode()
-        cpu_freq = int(out.strip().split('=')[1]) / 1000000  # Convert Hz to MHz
-
-        # Get the maximum frequency using psutil
+        cpu_freq = int(out.strip().split('=')[1]) / 1000000  # Hz to MHz
         per_cpu = psutil.cpu_freq(percpu=True)
-        if not per_cpu:
-            return "N/A"
-        # Get the nominal (max) frequency from the first core (assuming all cores have the same nominal)
-        max_freq = per_cpu[0].max  # in MHz
-        
+        max_freq = per_cpu[0].max if per_cpu else 0
         return f"{cpu_freq:.0f} / {max_freq} MHz"
     except Exception as e:
         return f"Error: {e}"
-
-def get_status_text(fps, direction, tracker_type, cpu_usage, cpu_freq, cpu_temp, mem_usage, throttling_status):
-    return (
-        f"FPS: {fps:.2f}\n"
-        f"Tracking: {direction}\n"
-        f"Tracker: {tracker_type}\n"
-        f"CPU: {cpu_usage}\n"
-        f"CPU freq: {cpu_freq}\n"
-        f"CPU temp: {cpu_temp}\n"
-        f"RAM: {mem_usage}\n"
-        f"Throttle: {throttling_status}"
-    )
 
 # === Camera Setup ===
 picam2 = Picamera2()
@@ -173,21 +152,6 @@ picam2.configure(picam2.create_preview_configuration(main={
     "size": (FRAME_WIDTH, FRAME_HEIGHT)
 }))
 picam2.start()
-
-# === Monitoring Thread ===
-def monitor_system():
-    global cpu_usage_text, cpu_temp_text, cpu_freqs_text, mem_usage_text, throttling_status_text
-    while True:
-        cpu_usage = psutil.cpu_percent(interval=None)
-        per_cpu = psutil.cpu_percent(interval=None, percpu=True)
-        cpu_usage_text = f"{cpu_usage:.1f}% ({', '.join(f'{u:.1f}' for u in per_cpu)})"
-        cpu_temp = get_cpu_temp()
-        cpu_temp_text = f"{cpu_temp:.1f} C" if cpu_temp else "N/A"
-        cpu_freqs_text = get_cpu_freq()  # Get the current CPU frequencies
-        mem = psutil.virtual_memory()
-        mem_usage_text = f"{mem.percent:.1f}% ({mem.used // (1024*1024)} MB / {mem.total // (1024*1024)} MB)"
-        throttling_status_text = get_throttling_status()
-        time.sleep(2)
 
 # === Frame Capture Thread ===
 def capture_frames():
@@ -267,13 +231,12 @@ def capture_frames():
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
             alert_active = False
 
-        # FPS
         curr_frame_time = time.time()
         fps = 1.0 / (curr_frame_time - prev_frame_time)
         prev_frame_time = curr_frame_time
 
         cv2.putText(frame, f"FPS: {fps:.2f}", (10, 50),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
 
         with lock:
             output_frame = frame.copy()
@@ -281,13 +244,35 @@ def capture_frames():
 # === Flask Routes ===
 @app.route('/get_status')
 def get_status():
-    return {
-        'cpu_usage': cpu_usage_text,
-        'cpu_temp': cpu_temp_text,
-        'cpu_freq': cpu_freqs_text,
-        'mem_usage': mem_usage_text,
-        'throttling_status': throttling_status_text
-    }
+    global last_status_time, last_status_result
+    current_time = time.time()
+
+    if current_time - last_status_time >= 2:
+        cpu_usage = psutil.cpu_percent(interval=None)
+        per_cpu = psutil.cpu_percent(interval=None, percpu=True)
+        cpu_usage_text = f"{cpu_usage:.1f}% ({', '.join(f'{u:.1f}' for u in per_cpu)})"
+
+        cpu_temp = get_cpu_temp()
+        cpu_temp_text = f"{cpu_temp:.1f} C" if cpu_temp else "N/A"
+
+        cpu_freqs_text = get_cpu_freq()
+
+        mem = psutil.virtual_memory()
+        mem_usage_text = f"{mem.percent:.1f}% ({mem.used // (1024*1024)} MB / {mem.total // (1024*1024)} MB)"
+
+        throttling_status_text = get_throttling_status()
+
+        last_status_result = {
+            'cpu_usage': cpu_usage_text,
+            'cpu_temp': cpu_temp_text,
+            'cpu_freq': cpu_freqs_text,
+            'mem_usage': mem_usage_text,
+            'throttling_status': throttling_status_text
+        }
+
+        last_status_time = current_time
+
+    return last_status_result
 
 def generate_stream():
     global output_frame
@@ -295,7 +280,7 @@ def generate_stream():
         with lock:
             if output_frame is None:
                 continue
-            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 30]  # Default is 95
+            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 30]
             _, buffer = cv2.imencode('.jpg', output_frame, encode_param)
             frame = buffer.tobytes()
         yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
@@ -307,11 +292,11 @@ def index():
         current_tracker=TRACKER_TYPE,
         line_x=LINE_X,
         width=FRAME_WIDTH,
-        cpu_usage=cpu_usage_text,
-        cpu_temp=cpu_temp_text,
-        cpu_freq=cpu_freqs_text,
-        mem_usage=mem_usage_text,
-        throttling_status=throttling_status_text)
+        cpu_usage="Calculating...",
+        cpu_temp="N/A",
+        cpu_freq="0",
+        mem_usage="0",
+        throttling_status="Checking...")
 
 @app.route('/video_feed')
 def video_feed():
@@ -350,6 +335,5 @@ def set_line():
 
 # === Start Threads ===
 if __name__ == '__main__':
-    threading.Thread(target=monitor_system, daemon=True).start()
     threading.Thread(target=capture_frames, daemon=True).start()
     app.run(host='0.0.0.0', port=5000, threaded=True)
