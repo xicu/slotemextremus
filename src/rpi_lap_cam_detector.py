@@ -18,7 +18,7 @@ new_tracker_type = None
 recalibrate_flag = False
 
 # Tracker config
-LINE_Y = 300
+LINE_X = 320  # vertical line in the center of 640px width
 COOLDOWN_FRAMES = 15
 MIN_CONFIDENCE = 0.4
 alert_active = False
@@ -93,8 +93,8 @@ def capture_frames():
     global output_frame, tracker, cooldown, alert_active
     global crossing_history, reset_tracker_flag, recalibrate_flag, direction, new_tracker_type, TRACKER_TYPE
 
-    prev_frame_time = time.time()       # For FPS calculation
-    prev_monitoring_time = time.time()  # For system monitoring
+    prev_frame_time = time.time()
+    prev_monitoring_time = time.time()
     psutil.cpu_percent(interval=0, percpu=True)
     global cpu_usage_text
     cpu_usage_text = "Calculating..."
@@ -108,24 +108,21 @@ def capture_frames():
     while True:
         frame = picam2.capture_array()
 
-        # Handle Tracker Reset
         if reset_tracker_flag:
             tracker = None
             crossing_history.clear()
             print("INFO: Tracker has been reset from web UI")
             reset_tracker_flag = False
 
-        # Handle Background Recalibration
         if recalibrate_flag:
             if hasattr(init_tracker, 'avg'):
                 del init_tracker.avg
             print("INFO: Background recalibration triggered from web UI")
             recalibrate_flag = False
 
-        # Handle Tracker Change
         if new_tracker_type and new_tracker_type != TRACKER_TYPE:
             print(f"INFO: Switching tracker from {TRACKER_TYPE} to {new_tracker_type}")
-            TRACKER_TYPE = new_tracker_type  # Update the global tracker type
+            TRACKER_TYPE = new_tracker_type
             new_tracker_type = None
             tracker = None
             crossing_history.clear()
@@ -138,12 +135,12 @@ def capture_frames():
             success, bbox = tracker.update(frame)
             if success:
                 x, y, w, h = [int(v) for v in bbox]
-                center_y = y + h // 2
-                top_cross = y <= LINE_Y <= y + h
-                bottom_cross = (y + h) >= LINE_Y >= y
-                direction = "DOWN" if center_y > LINE_Y else "UP"
+                center_x = x + w // 2
+                left_cross = x <= LINE_X <= x + w
+                right_cross = (x + w) >= LINE_X >= x
+                direction = "RIGHT" if center_x > LINE_X else "LEFT"
 
-                if (top_cross or bottom_cross) and cooldown == 0:
+                if (left_cross or right_cross) and cooldown == 0:
                     crossing_history.append(direction)
                     if len(crossing_history) > 5:
                         crossing_history.pop(0)
@@ -171,9 +168,9 @@ def capture_frames():
                     tracker = init_tracker(frame, (x, y, w, h))
                     break
 
-        # Draw line
-        cv2.line(frame, (0, LINE_Y), (frame.shape[1], LINE_Y), (0, 255, 0), 2)
-        cv2.putText(frame, f"Line @ Y={LINE_Y}", (10, frame.shape[0] - 10),
+        # Draw vertical line
+        cv2.line(frame, (LINE_X, 0), (LINE_X, frame.shape[0]), (0, 255, 0), 2)
+        cv2.putText(frame, f"Line @ X={LINE_X}", (10, frame.shape[0] - 10),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
         if tracker is not None and success:
@@ -186,13 +183,11 @@ def capture_frames():
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
             alert_active = False
 
-        # FPS
         curr_frame_time = time.time()
         fps = 1.0 / (curr_frame_time - prev_frame_time)
         prev_frame_time = curr_frame_time
         fps_text = f"FPS: {fps:.2f}"
 
-        # System Monitoring updates every 2 seconds
         if time.time() - prev_monitoring_time > 2:
             prev_monitoring_time = time.time()
             total_cpu = psutil.cpu_percent(interval=0)
@@ -205,7 +200,6 @@ def capture_frames():
 
         status_text = f"Tracking: {direction if tracker else 'None'}"
         tracker_name_text = f"Tracker: {TRACKER_TYPE}"
-
 
         cv2.putText(frame, status_text, (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
@@ -220,12 +214,10 @@ def capture_frames():
         cv2.putText(frame, mem_usage_text, (10, 180),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
 
-        # Output to stream
         with lock:
             output_frame = frame.copy()
 
         showWindow and cv2.imshow("Fast Object Tracking", frame)
-
 
 def generate_stream():
     global output_frame
