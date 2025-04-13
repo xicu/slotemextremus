@@ -15,6 +15,9 @@ FRAME_HEIGHT = 480
 LINE_X = FRAME_WIDTH // 2  # Horizontal tracking
 COOLDOWN_FRAMES = 15
 MIN_CONFIDENCE = 0.4
+MIN_Y = 0
+MAX_Y = FRAME_HEIGHT
+
 
 # === Globals ===
 output_frame = None
@@ -54,6 +57,14 @@ HTML_PAGE = """
 <input type="range" id="lineSlider" min="0" max="{{ width }}" value="{{ line_x }}" oninput="updateLine(this.value)" />
 
 <br><br>
+<label for="minYSlider">Minimum Y: <span id="minYValue">{{ min_y }}</span></label><br>
+<input type="range" id="minYSlider" min="0" max="{{ height }}" value="{{ min_y }}" oninput="updateMinY(this.value)" />
+
+<br><br>
+<label for="maxYSlider">Maximum Y: <span id="maxYValue">{{ max_y }}</span></label><br>
+<input type="range" id="maxYSlider" min="0" max="{{ height }}" value="{{ max_y }}" oninput="updateMaxY(this.value)" />
+
+<br><br>
 <button onclick="fetch('/reset_tracker')">Reset Tracker</button>
 <button onclick="fetch('/recalibrate')">Recalibrate Background</button>
 
@@ -72,7 +83,14 @@ function updateLine(value) {
     document.getElementById("lineValue").innerText = value;
     fetch('/set_line?x=' + value).then(r => r.text()).then(console.log);
 }
-
+function updateMinY(value) {
+    document.getElementById("minYValue").innerText = value;
+    fetch('/set_min_y?y=' + value).then(r => r.text()).then(console.log);
+}
+function updateMaxY(value) {
+    document.getElementById("maxYValue").innerText = value;
+    fetch('/set_max_y?y=' + value).then(r => r.text()).then(console.log);
+}
 function updateSystemInfo() {
     fetch('/get_status')
         .then(response => response.json())
@@ -84,8 +102,6 @@ function updateSystemInfo() {
             document.getElementById("throttlingStatus").innerText = data.throttling_status;
         });
 }
-
-// Update the system info every 2 seconds
 setInterval(updateSystemInfo, 2000);
 </script>
 """
@@ -214,9 +230,13 @@ def capture_frames():
             for c in contours:
                 if cv2.contourArea(c) > 1000:
                     (x, y, w, h) = cv2.boundingRect(c)
+                    if y < MIN_Y or y + h > MAX_Y:
+                        continue
                     tracker = init_tracker(frame, (x, y, w, h))
                     break
 
+        cv2.line(frame, (0, MIN_Y), (FRAME_WIDTH, MIN_Y), (0, 0, 255), 2)
+        cv2.line(frame, (0, MAX_Y), (FRAME_WIDTH, MAX_Y), (0, 0, 255), 2)
         cv2.line(frame, (LINE_X, 0), (LINE_X, FRAME_HEIGHT), (0, 255, 0), 2)
         cv2.putText(frame, f"Line @ X={LINE_X}", (10, FRAME_HEIGHT - 10),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
@@ -291,12 +311,16 @@ def index():
         trackers=AVAILABLE_TRACKERS.keys(),
         current_tracker=TRACKER_TYPE,
         line_x=LINE_X,
+        min_y=MIN_Y,
+        max_y=MAX_Y,
         width=FRAME_WIDTH,
+        height=FRAME_HEIGHT,
         cpu_usage="Calculating...",
         cpu_temp="N/A",
         cpu_freq="0",
         mem_usage="0",
         throttling_status="Checking...")
+
 
 @app.route('/video_feed')
 def video_feed():
@@ -330,6 +354,24 @@ def set_line():
     try:
         LINE_X = int(request.args.get('x'))
         return f"Line X set to {LINE_X}", 200
+    except:
+        return "Invalid value", 400
+
+@app.route('/set_min_y')
+def set_min_y():
+    global MIN_Y
+    try:
+        MIN_Y = int(request.args.get('y'))
+        return f"Min Y set to {MIN_Y}", 200
+    except:
+        return "Invalid value", 400
+
+@app.route('/set_max_y')
+def set_max_y():
+    global MAX_Y
+    try:
+        MAX_Y = int(request.args.get('y'))
+        return f"Max Y set to {MAX_Y}", 200
     except:
         return "Invalid value", 400
 
