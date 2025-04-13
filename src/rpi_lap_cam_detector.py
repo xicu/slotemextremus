@@ -5,50 +5,60 @@ import numpy as np
 from picamera2 import Picamera2
 import time
 import psutil
+import subprocess
 
 app = Flask(__name__)
 
 # === Config ===
 FRAME_WIDTH = 640
 FRAME_HEIGHT = 480
-LINE_X = FRAME_WIDTH // 2
+LINE_X = FRAME_WIDTH // 2  # Horizontal tracking
 COOLDOWN_FRAMES = 15
 MIN_CONFIDENCE = 0.4
 
 # === Globals ===
 output_frame = None
 lock = threading.Lock()
+
 reset_tracker_flag = False
 new_tracker_type = None
 recalibrate_flag = False
+
 alert_active = False
 cooldown = 0
 tracker = None
 crossing_history = []
 direction = "N/A"
-cpu_usage_text = "Calculating..."
-cpu_freqs_text = "0"
-cpu_temp_text = "0"
-mem_usage_text = "0"
 
-# === HTML Template ===
+cpu_usage_text = "Calculating..."
+cpu_temp_text = "N/A"
+cpu_freqs_text = "0"
+mem_usage_text = "0"
+throttling_status_text = "Checking..."
+
+# === Flask HTML Template ===
 HTML_PAGE = """
 <!doctype html>
 <title>Raspberry Pi Stream</title>
 <h1>Live Object Tracking</h1>
+
 <img src="{{ url_for('video_feed') }}" style="width: {{ width }}px;"><br><br>
+
 <label for="trackerSelect">Tracker:</label>
 <select id="trackerSelect" onchange="setTracker(this.value)">
   {% for t in trackers %}
     <option value="{{t}}" {% if t == current_tracker %}selected{% endif %}>{{t}}</option>
   {% endfor %}
 </select>
+
 <br><br>
 <label for="lineSlider">Detection Line Position (X): <span id="lineValue">{{ line_x }}</span></label><br>
 <input type="range" id="lineSlider" min="0" max="{{ width }}" value="{{ line_x }}" oninput="updateLine(this.value)" />
+
 <br><br>
 <button onclick="fetch('/reset_tracker')">Reset Tracker</button>
 <button onclick="fetch('/recalibrate')">Recalibrate Background</button>
+
 <script>
 function setTracker(value) {
     fetch('/set_tracker?type=' + value).then(r => r.text()).then(console.log);
@@ -78,6 +88,7 @@ def init_tracker(frame, bbox):
     t.init(frame, bbox)
     return t
 
+# === System Info Functions ===
 def get_cpu_temp():
     try:
         with open("/sys/class/thermal/thermal_zone0/temp", "r") as f:
@@ -85,7 +96,26 @@ def get_cpu_temp():
     except FileNotFoundError:
         return None
 
-def get_status_text(fps, direction, tracker_type, cpu_usage, cpu_freq, cpu_temp, mem_usage):
+def get_throttling_status():
+    try:
+        out = subprocess.check_output(['vcgencmd', 'get_throttled']).decode()
+        hex_value = int(out.strip().split('=')[1], 16)
+        flags = {
+            0x1: "Under-voltage",
+            0x2: "Freq capped",
+            0x4: "Throttled",
+            0x8: "Temp soft limit",
+            0x10000: "Under-voltage occurred",
+            0x20000: "Freq cap occurred",
+            0x40000: "Throttle occurred",
+            0x80000: "Temp limit occurred"
+        }
+        messages = [msg for bit, msg in flags.items() if hex_value & bit]
+        return "OK" if not messages else "; ".join(messages)
+    except Exception as e:
+        return f"Error: {e}"
+
+def get_status_text(fps, direction, tracker_type, cpu_usage, cpu_freq, cpu_temp, mem_usage, throttling_status):
     return (
         f"FPS: {fps:.2f}\n"
         f"Tracking: {direction}\n"
@@ -93,36 +123,40 @@ def get_status_text(fps, direction, tracker_type, cpu_usage, cpu_freq, cpu_temp,
         f"CPU: {cpu_usage}\n"
         f"CPU freq: {cpu_freq}\n"
         f"CPU temp: {cpu_temp}\n"
-        f"RAM: {mem_usage}"
+        f"RAM: {mem_usage}\n"
+        f"Throttle: {throttling_status}"
     )
 
 # === Camera Setup ===
 picam2 = Picamera2()
-picam2.configure(picam2.create_preview_configuration(main={"format": 'RGB888', "size": (FRAME_WIDTH, FRAME_HEIGHT)}))
+picam2.configure(picam2.create_preview_configuration(main={
+    "format": 'RGB888',
+    "size": (FRAME_WIDTH, FRAME_HEIGHT)
+}))
 picam2.start()
 
 # === Monitoring Thread ===
 def monitor_system():
-    global cpu_usage_text, cpu_temp_text, cpu_freqs_text, mem_usage_text
+    global cpu_usage_text, cpu_temp_text, cpu_freqs_text, mem_usage_text, throttling_status_text
     while True:
-        cpu_usage = psutil.cpu_percent(interval=1)
-        cpu_usages = psutil.cpu_percent(interval=0, percpu=True)
-        cpu_usage_text = f"{cpu_usage:.1f}% ({', '.join(f'{u:.1f}' for u in cpu_usages)})"
+        cpu_usage = psutil.cpu_percent(interval=None)
+        per_cpu = psutil.cpu_percent(interval=None, percpu=True)
+        cpu_usage_text = f"{cpu_usage:.1f}% ({', '.join(f'{u:.1f}' for u in per_cpu)})"
         cpu_temp = get_cpu_temp()
         cpu_temp_text = f"{cpu_temp:.1f} C" if cpu_temp else "N/A"
-        cpu_freqs = psutil.cpu_freq(percpu=True)
-        cpu_freqs_text = ", ".join([f"{f.current:.0f} MHz" for f in cpu_freqs])
-        memory = psutil.virtual_memory()
-        mem_usage_text = f"{memory.percent:.1f}% ({memory.used // (1024 * 1024)} MB / {memory.total // (1024 * 1024)} MB)"
-        time.sleep(2.5)
+        freqs = psutil.cpu_freq(percpu=True)
+        cpu_freqs_text = ", ".join(f"{f.current:.0f} MHz" for f in freqs)
+        mem = psutil.virtual_memory()
+        mem_usage_text = f"{mem.percent:.1f}% ({mem.used // (1024*1024)} MB / {mem.total // (1024*1024)} MB)"
+        throttling_status_text = get_throttling_status()
+        time.sleep(2)
 
-# === Frame Capture ===
+# === Frame Capture Thread ===
 def capture_frames():
     global output_frame, tracker, cooldown, alert_active
     global crossing_history, reset_tracker_flag, recalibrate_flag, direction, new_tracker_type, TRACKER_TYPE, LINE_X
 
     prev_frame_time = time.time()
-
     while True:
         frame = picam2.capture_array()
 
@@ -146,7 +180,7 @@ def capture_frames():
             cooldown -= 1
 
         success = False
-        if tracker is not None:
+        if tracker:
             success, bbox = tracker.update(frame)
             if success:
                 x, y, w, h = [int(v) for v in bbox]
@@ -200,13 +234,15 @@ def capture_frames():
         fps = 1.0 / (curr_frame_time - prev_frame_time)
         prev_frame_time = curr_frame_time
 
-        # Overlay status info
-        status_text = get_status_text(fps, direction if tracker else 'None', TRACKER_TYPE,
-                                      cpu_usage_text, cpu_freqs_text, cpu_temp_text, mem_usage_text)
-        y0, dy = 30, 30
+        status_text = get_status_text(fps, direction if tracker else 'None',
+            TRACKER_TYPE, cpu_usage_text, cpu_freqs_text,
+            cpu_temp_text, mem_usage_text, throttling_status_text)
+
+        y0, dy = 30, 25
         for i, line in enumerate(status_text.split('\n')):
             y = y0 + i * dy
-            cv2.putText(frame, line, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
+            cv2.putText(frame, line, (10, y),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
 
         with lock:
             output_frame = frame.copy()
@@ -218,10 +254,10 @@ def generate_stream():
         with lock:
             if output_frame is None:
                 continue
-            _, buffer = cv2.imencode('.jpg', output_frame)
+            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 30]  # Default is 95
+            _, buffer = cv2.imencode('.jpg', output_frame, encode_param)
             frame = buffer.tobytes()
-        yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+        yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
 
 @app.route('/')
 def index():
@@ -233,7 +269,8 @@ def index():
 
 @app.route('/video_feed')
 def video_feed():
-    return Response(generate_stream(), mimetype='multipart/x-mixed-replace; boundary=frame')
+    return Response(generate_stream(),
+                    mimetype='multipart/x-mixed-replace; boundary=frame')
 
 @app.route('/reset_tracker')
 def reset_tracker():
@@ -265,8 +302,8 @@ def set_line():
     except:
         return "Invalid value", 400
 
-# === Run App ===
+# === Start Threads ===
 if __name__ == '__main__':
-    threading.Thread(target=capture_frames, daemon=True).start()
     threading.Thread(target=monitor_system, daemon=True).start()
+    threading.Thread(target=capture_frames, daemon=True).start()
     app.run(host='0.0.0.0', port=5000, threaded=True)
