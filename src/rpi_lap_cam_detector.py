@@ -59,6 +59,13 @@ HTML_PAGE = """
 <button onclick="fetch('/reset_tracker')">Reset Tracker</button>
 <button onclick="fetch('/recalibrate')">Recalibrate Background</button>
 
+<h2>System Info:</h2>
+<p><strong>CPU Usage:</strong> <span id="cpuUsage">{{ cpu_usage }}</span></p>
+<p><strong>CPU Temperature:</strong> <span id="cpuTemp">{{ cpu_temp }}</span></p>
+<p><strong>CPU Frequency:</strong> <span id="cpuFreq">{{ cpu_freq }}</span></p>
+<p><strong>Memory Usage:</strong> <span id="memUsage">{{ mem_usage }}</span></p>
+<p><strong>Throttle Status:</strong> <span id="throttlingStatus">{{ throttling_status }}</span></p>
+
 <script>
 function setTracker(value) {
     fetch('/set_tracker?type=' + value).then(r => r.text()).then(console.log);
@@ -67,6 +74,21 @@ function updateLine(value) {
     document.getElementById("lineValue").innerText = value;
     fetch('/set_line?x=' + value).then(r => r.text()).then(console.log);
 }
+
+function updateSystemInfo() {
+    fetch('/get_status')
+        .then(response => response.json())
+        .then(data => {
+            document.getElementById("cpuUsage").innerText = data.cpu_usage;
+            document.getElementById("cpuTemp").innerText = data.cpu_temp;
+            document.getElementById("cpuFreq").innerText = data.cpu_freq;
+            document.getElementById("memUsage").innerText = data.mem_usage;
+            document.getElementById("throttlingStatus").innerText = data.throttling_status;
+        });
+}
+
+// Update the system info every 2 seconds
+setInterval(updateSystemInfo, 2000);
 </script>
 """
 
@@ -115,6 +137,10 @@ def get_throttling_status():
     except Exception as e:
         return f"Error: {e}"
 
+def get_cpu_freq():
+    freqs = psutil.cpu_freq(percpu=True)
+    return ", ".join([f"{f.current:.0f} MHz" for f in freqs])
+
 def get_status_text(fps, direction, tracker_type, cpu_usage, cpu_freq, cpu_temp, mem_usage, throttling_status):
     return (
         f"FPS: {fps:.2f}\n"
@@ -144,8 +170,7 @@ def monitor_system():
         cpu_usage_text = f"{cpu_usage:.1f}% ({', '.join(f'{u:.1f}' for u in per_cpu)})"
         cpu_temp = get_cpu_temp()
         cpu_temp_text = f"{cpu_temp:.1f} C" if cpu_temp else "N/A"
-        freqs = psutil.cpu_freq(percpu=True)
-        cpu_freqs_text = ", ".join(f"{f.current:.0f} MHz" for f in freqs)
+        cpu_freqs_text = get_cpu_freq()  # Get the current CPU frequencies
         mem = psutil.virtual_memory()
         mem_usage_text = f"{mem.percent:.1f}% ({mem.used // (1024*1024)} MB / {mem.total // (1024*1024)} MB)"
         throttling_status_text = get_throttling_status()
@@ -234,20 +259,23 @@ def capture_frames():
         fps = 1.0 / (curr_frame_time - prev_frame_time)
         prev_frame_time = curr_frame_time
 
-        status_text = get_status_text(fps, direction if tracker else 'None',
-            TRACKER_TYPE, cpu_usage_text, cpu_freqs_text,
-            cpu_temp_text, mem_usage_text, throttling_status_text)
-
-        y0, dy = 30, 25
-        for i, line in enumerate(status_text.split('\n')):
-            y = y0 + i * dy
-            cv2.putText(frame, line, (10, y),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
+        cv2.putText(frame, f"FPS: {fps:.2f}", (10, 50),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
         with lock:
             output_frame = frame.copy()
 
 # === Flask Routes ===
+@app.route('/get_status')
+def get_status():
+    return {
+        'cpu_usage': cpu_usage_text,
+        'cpu_temp': cpu_temp_text,
+        'cpu_freq': cpu_freqs_text,
+        'mem_usage': mem_usage_text,
+        'throttling_status': throttling_status_text
+    }
+
 def generate_stream():
     global output_frame
     while True:
@@ -265,7 +293,12 @@ def index():
         trackers=AVAILABLE_TRACKERS.keys(),
         current_tracker=TRACKER_TYPE,
         line_x=LINE_X,
-        width=FRAME_WIDTH)
+        width=FRAME_WIDTH,
+        cpu_usage=cpu_usage_text,
+        cpu_temp=cpu_temp_text,
+        cpu_freq=cpu_freqs_text,
+        mem_usage=mem_usage_text,
+        throttling_status=throttling_status_text)
 
 @app.route('/video_feed')
 def video_feed():
