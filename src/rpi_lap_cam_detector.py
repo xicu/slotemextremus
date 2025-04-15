@@ -72,6 +72,7 @@ HTML_PAGE = """
 <br><br>
 <button onclick="fetch('/reset_tracker')">Reset Tracker</button>
 <button onclick="fetch('/recalibrate')">Recalibrate Background</button>
+<button onclick="fetch('/reset_autofocus')">Reset Autofocus</button>
 
 <h2>System Info:</h2>
 <p><strong>CPU Usage:</strong> <span id="cpuUsage">Calculating...</span></p>
@@ -165,6 +166,17 @@ def get_cpu_freq():
     except Exception as e:
         return f"Error: {e}"
 
+def reset_autofocus():
+    try:
+        picam2.set_controls({"AfMode": 1})  # Continuous autofocus mode
+        picam2.set_controls({"AfTrigger": 0})  # Cancel any current AF action
+        time.sleep(0.1)
+        picam2.set_controls({"AfTrigger": 1})  # Start a new AF cycle
+        print("Autofocus reset triggered.")
+    except Exception as e:
+        print(f"Error resetting autofocus: {e}")
+
+# === Camera Setup ===
 picam2 = Picamera2()
 picam2.configure(picam2.create_preview_configuration(main={
     "format": 'RGB888',
@@ -410,6 +422,11 @@ def set_max_y():
         return f"Max Y set to {MAX_Y}", 200
     except:
         return "Invalid value", 400
+
+@app.route('/reset_autofocus')
+def reset_autofocus_route():
+    reset_autofocus()
+    return "Autofocus reset", 200
 
 # === Start Threads ===
 if __name__ == '__main__':
