@@ -1,3 +1,4 @@
+import queue
 from flask import Flask, Response, render_template_string, request
 import threading
 import cv2
@@ -10,9 +11,9 @@ import subprocess
 app = Flask(__name__)
 
 # === Config ===
-FRAME_WIDTH = 1280
-FRAME_HEIGHT = 720
-FRAME_FPS = 60
+FRAME_WIDTH = 1200 #1536
+FRAME_HEIGHT = 600 #864
+FRAME_FPS = 100
 LINE_X = FRAME_WIDTH // 2
 COOLDOWN_FRAMES = 15
 MIN_CONFIDENCE = 0.4
@@ -20,13 +21,14 @@ MIN_Y = 0
 MAX_Y = FRAME_HEIGHT
 
 # === Streaming quality ===
-STREAM_QUALITY = 50
+STREAM_QUALITY = 40
 STREAM_FPS_MAX = 30
 STREAM_LAST_FRAME_TIME = None
 
 # === Globals ===
 output_frame = None
 lock = threading.Lock()
+#frame_queue = queue.Queue(maxsize=2)  # keep it small to avoid lag
 
 reset_tracker_flag = False
 new_tracker_type = None
@@ -285,7 +287,6 @@ def capture_frames():
             thresh = cv2.threshold(frame_delta, 25, 255, cv2.THRESH_BINARY)[1]
             thresh = cv2.dilate(thresh, None, iterations=2)
             contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            print(f"Number of contours detected: {len(contours)}")
             for c in contours:
                 if cv2.contourArea(c) > 1000:
                     (x, y, w, h) = cv2.boundingRect(c)
@@ -314,11 +315,19 @@ def capture_frames():
         curr_frame_time = time.time()
         fps = 1.0 / (curr_frame_time - prev_frame_time)
         prev_frame_time = curr_frame_time
-        cv2.putText(frame, f"FPS: {fps:.2f}", (10, 50),
+        cv2.putText(frame, f"FPS: {fps:.1f}", (10, 50),
                     cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
+#        print (f"FPS: {fps:.1f}")
 
         with lock:
             output_frame = frame.copy()
+#        try:
+#            if not frame_queue.full():
+#                frame_queue.put_nowait(frame.copy())
+#        except queue.Full:
+#            pass  # Drop the frame if no one is consuming
+        
+        time.sleep(0.005)  # gentle with other threads
 
 
 # === Flask Routes ===
@@ -358,7 +367,7 @@ def generate_stream():
     global output_frame, STREAM_LAST_FRAME_TIME
     while True:
         current_time = time.time()
-        if False and STREAM_LAST_FRAME_TIME is not None and (current_time - STREAM_LAST_FRAME_TIME) < (1.0 / STREAM_FPS_MAX):
+        if  STREAM_LAST_FRAME_TIME is not None and (current_time - STREAM_LAST_FRAME_TIME) < (1.0 / STREAM_FPS_MAX):
             time.sleep((1.0 / STREAM_FPS_MAX) - (current_time - STREAM_LAST_FRAME_TIME))
             continue
 
@@ -366,6 +375,14 @@ def generate_stream():
             if output_frame is None:
                 continue
             output_frame_copy = output_frame.copy()
+
+#        try:
+#            output_frame_copy = frame_queue.get(timeout=1)  # waits for next frame
+#        except queue.Empty:
+#            continue
+#        while not frame_queue.empty():
+#            output_frame_copy = frame_queue.get()
+
 
         encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), STREAM_QUALITY]
         _, buffer = cv2.imencode('.jpg', output_frame_copy, encode_param)
