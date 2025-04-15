@@ -204,6 +204,9 @@ def capture_frames():
 
     while True:
         frame = picam2.capture_array()
+        resized = cv2.resize(frame, (frame.shape[1] // 2, frame.shape[0] // 2), interpolation=cv2.INTER_AREA)
+        gray = cv2.cvtColor(resized, cv2.COLOR_RGB2GRAY)
+
 
         if reset_tracker_flag:
             tracker = None
@@ -232,7 +235,7 @@ def capture_frames():
 
         success = False
         if tracker:
-            success, bbox = tracker.update(frame)
+            success, bbox = tracker.update(gray)
             if success:
                 x, y, w, h = [int(v) for v in bbox]
                 center_x = x + w // 2
@@ -274,12 +277,11 @@ def capture_frames():
                 has_crossed_line = False
                 direction = "N/A"
         else:
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            gray = cv2.GaussianBlur(gray, (21, 21), 0)
+            blur = cv2.GaussianBlur(gray, (21, 21), 0)
             if not hasattr(init_tracker, 'avg'):
-                init_tracker.avg = gray.copy().astype("float")
-            cv2.accumulateWeighted(gray, init_tracker.avg, 0.5)
-            frame_delta = cv2.absdiff(gray, cv2.convertScaleAbs(init_tracker.avg))
+                init_tracker.avg = blur.copy().astype("float")
+            cv2.accumulateWeighted(blur, init_tracker.avg, 0.5)
+            frame_delta = cv2.absdiff(blur, cv2.convertScaleAbs(init_tracker.avg))
             thresh = cv2.threshold(frame_delta, 25, 255, cv2.THRESH_BINARY)[1]
             thresh = cv2.dilate(thresh, None, iterations=2)
             contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -289,7 +291,7 @@ def capture_frames():
                     (x, y, w, h) = cv2.boundingRect(c)
                     if y < MIN_Y or y + h > MAX_Y:
                         continue
-                    tracker = init_tracker(frame, (x, y, w, h))
+                    tracker = init_tracker(gray, (x, y, w, h))
                     tracker_start_time = time.time()  # ADDED
                     last_position = None              # ADDED
                     has_crossed_line = False          # ADDED
@@ -312,7 +314,6 @@ def capture_frames():
         curr_frame_time = time.time()
         fps = 1.0 / (curr_frame_time - prev_frame_time)
         prev_frame_time = curr_frame_time
-
         cv2.putText(frame, f"FPS: {fps:.2f}", (10, 50),
                     cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
 
@@ -357,7 +358,7 @@ def generate_stream():
     global output_frame, STREAM_LAST_FRAME_TIME
     while True:
         current_time = time.time()
-        if STREAM_LAST_FRAME_TIME is not None and (current_time - STREAM_LAST_FRAME_TIME) < (1.0 / STREAM_FPS_MAX):
+        if False and STREAM_LAST_FRAME_TIME is not None and (current_time - STREAM_LAST_FRAME_TIME) < (1.0 / STREAM_FPS_MAX):
             time.sleep((1.0 / STREAM_FPS_MAX) - (current_time - STREAM_LAST_FRAME_TIME))
             continue
 
