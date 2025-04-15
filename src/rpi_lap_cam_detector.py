@@ -10,14 +10,14 @@ import subprocess
 app = Flask(__name__)
 
 # === Config ===
-FRAME_WIDTH = 640
-FRAME_HEIGHT = 480
-LINE_X = FRAME_WIDTH // 2  # Horizontal tracking
+FRAME_WIDTH = 800
+FRAME_HEIGHT = 600
+LINE_X = FRAME_WIDTH // 2
 COOLDOWN_FRAMES = 15
 MIN_CONFIDENCE = 0.4
 MIN_Y = 0
 MAX_Y = FRAME_HEIGHT
-
+STREAM_QUALITY = 60
 
 # === Globals ===
 output_frame = None
@@ -33,9 +33,14 @@ tracker = None
 crossing_history = []
 direction = "N/A"
 
-TRACKER_TYPE = None  # Will be set later
+TRACKER_TYPE = None
 last_status_time = 0
 last_status_result = {}
+
+# Tracker timing & movement
+tracker_start_time = None  # ADDED
+last_position = None       # ADDED
+has_crossed_line = False   # ADDED
 
 # === Flask HTML Template ===
 HTML_PAGE = """
@@ -109,9 +114,9 @@ setInterval(updateSystemInfo, 2000);
 # === Tracker Setup ===
 def get_available_trackers():
     trackers = {
+        'MOSSE': cv2.legacy.TrackerMOSSE_create if hasattr(cv2.legacy, 'TrackerMOSSE_create') else None,
         'CSRT': cv2.legacy.TrackerCSRT_create if hasattr(cv2.legacy, 'TrackerCSRT_create') else None,
-        'KCF': cv2.legacy.TrackerKCF_create if hasattr(cv2.legacy, 'TrackerKCF_create') else None,
-        'MOSSE': cv2.legacy.TrackerMOSSE_create if hasattr(cv2.legacy, 'TrackerMOSSE_create') else None
+        'KCF': cv2.legacy.TrackerKCF_create if hasattr(cv2.legacy, 'TrackerKCF_create') else None
     }
     return {name: create for name, create in trackers.items() if create}
 
@@ -124,7 +129,6 @@ def init_tracker(frame, bbox):
     t.init(frame, bbox)
     return t
 
-# === System Info Helpers ===
 def get_cpu_temp():
     try:
         with open("/sys/class/thermal/thermal_zone0/temp", "r") as f:
@@ -154,14 +158,13 @@ def get_throttling_status():
 def get_cpu_freq():
     try:
         out = subprocess.check_output(['vcgencmd', 'measure_clock', 'arm']).decode()
-        cpu_freq = int(out.strip().split('=')[1]) / 1000000  # Hz to MHz
+        cpu_freq = int(out.strip().split('=')[1]) / 1000000
         per_cpu = psutil.cpu_freq(percpu=True)
         max_freq = per_cpu[0].max if per_cpu else 0
         return f"{cpu_freq:.0f} / {max_freq} MHz"
     except Exception as e:
         return f"Error: {e}"
 
-# === Camera Setup ===
 picam2 = Picamera2()
 picam2.configure(picam2.create_preview_configuration(main={
     "format": 'RGB888',
@@ -169,18 +172,23 @@ picam2.configure(picam2.create_preview_configuration(main={
 }))
 picam2.start()
 
-# === Frame Capture Thread ===
 def capture_frames():
     global output_frame, tracker, cooldown, alert_active
-    global crossing_history, reset_tracker_flag, recalibrate_flag, direction, new_tracker_type, TRACKER_TYPE, LINE_X
+    global crossing_history, reset_tracker_flag, recalibrate_flag
+    global direction, new_tracker_type, TRACKER_TYPE, LINE_X
+    global tracker_start_time, last_position, has_crossed_line  # ADDED
 
     prev_frame_time = time.time()
+
     while True:
         frame = picam2.capture_array()
 
         if reset_tracker_flag:
             tracker = None
             crossing_history.clear()
+            tracker_start_time = None  # ADDED
+            last_position = None       # ADDED
+            has_crossed_line = False   # ADDED
             reset_tracker_flag = False
 
         if recalibrate_flag:
@@ -192,6 +200,9 @@ def capture_frames():
             TRACKER_TYPE = new_tracker_type
             tracker = None
             crossing_history.clear()
+            tracker_start_time = None  # ADDED
+            last_position = None       # ADDED
+            has_crossed_line = False   # ADDED
             new_tracker_type = None
 
         if cooldown > 0:
@@ -203,19 +214,42 @@ def capture_frames():
             if success:
                 x, y, w, h = [int(v) for v in bbox]
                 center_x = x + w // 2
+                center_y = y + h // 2
+
+                if last_position:
+                    dx = abs(center_x - last_position[0])
+                    dy = abs(center_y - last_position[1])
+                    moved = dx > 10 or dy > 10
+                else:
+                    moved = False
+
+                last_position = (center_x, center_y)
+
                 left_cross = x <= LINE_X <= x + w
                 right_cross = (x + w) >= LINE_X >= x
                 direction = "RIGHT" if center_x > LINE_X else "LEFT"
 
                 if (left_cross or right_cross) and cooldown == 0:
+                    has_crossed_line = True
                     crossing_history.append(direction)
                     if len(crossing_history) > 5:
                         crossing_history.pop(0)
                     if len(set(crossing_history)) == 1:
                         alert_active = True
                         cooldown = COOLDOWN_FRAMES
+
+                if tracker_start_time and time.time() - tracker_start_time > 5:
+                    if not moved and not has_crossed_line:
+                        tracker = None
+                        tracker_start_time = None
+                        last_position = None
+                        has_crossed_line = False
+                        continue
             else:
                 tracker = None
+                tracker_start_time = None
+                last_position = None
+                has_crossed_line = False
                 direction = "N/A"
         else:
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -233,13 +267,14 @@ def capture_frames():
                     if y < MIN_Y or y + h > MAX_Y:
                         continue
                     tracker = init_tracker(frame, (x, y, w, h))
+                    tracker_start_time = time.time()  # ADDED
+                    last_position = None              # ADDED
+                    has_crossed_line = False          # ADDED
                     break
 
         cv2.line(frame, (0, MIN_Y), (FRAME_WIDTH, MIN_Y), (0, 0, 255), 2)
         cv2.line(frame, (0, MAX_Y), (FRAME_WIDTH, MAX_Y), (0, 0, 255), 2)
         cv2.line(frame, (LINE_X, 0), (LINE_X, FRAME_HEIGHT), (0, 255, 0), 2)
-        cv2.putText(frame, f"Line @ X={LINE_X}", (10, FRAME_HEIGHT - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
         if tracker and success:
             cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
@@ -260,6 +295,7 @@ def capture_frames():
 
         with lock:
             output_frame = frame.copy()
+
 
 # === Flask Routes ===
 @app.route('/get_status')
@@ -300,7 +336,7 @@ def generate_stream():
         with lock:
             if output_frame is None:
                 continue
-            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 30]
+            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), STREAM_QUALITY]
             _, buffer = cv2.imencode('.jpg', output_frame, encode_param)
             frame = buffer.tobytes()
         yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
