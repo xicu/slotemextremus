@@ -10,14 +10,19 @@ import subprocess
 app = Flask(__name__)
 
 # === Config ===
-FRAME_WIDTH = 800
-FRAME_HEIGHT = 600
+FRAME_WIDTH = 1280
+FRAME_HEIGHT = 720
+FRAME_FPS = 60
 LINE_X = FRAME_WIDTH // 2
 COOLDOWN_FRAMES = 15
 MIN_CONFIDENCE = 0.4
 MIN_Y = 0
 MAX_Y = FRAME_HEIGHT
-STREAM_QUALITY = 60
+
+# === Streaming quality ===
+STREAM_QUALITY = 50
+STREAM_FPS_MAX = 30
+STREAM_LAST_FRAME_TIME = None
 
 # === Globals ===
 output_frame = None
@@ -108,7 +113,7 @@ function updateSystemInfo() {
             document.getElementById("throttlingStatus").innerText = data.throttling_status;
         });
 }
-setInterval(updateSystemInfo, 2000);
+setInterval(updateSystemInfo, 3000);
 </script>
 """
 
@@ -178,10 +183,15 @@ def reset_autofocus():
 
 # === Camera Setup ===
 picam2 = Picamera2()
-picam2.configure(picam2.create_preview_configuration(main={
-    "format": 'RGB888',
-    "size": (FRAME_WIDTH, FRAME_HEIGHT)
-}))
+print(picam2.sensor_modes)
+config = picam2.create_preview_configuration(
+    main={
+        "format": 'RGB888',
+        "size": (FRAME_WIDTH, FRAME_HEIGHT)
+    },
+    controls={"FrameRate": FRAME_FPS}
+)
+picam2.configure(config)
 picam2.start()
 
 def capture_frames():
@@ -273,6 +283,7 @@ def capture_frames():
             thresh = cv2.threshold(frame_delta, 25, 255, cv2.THRESH_BINARY)[1]
             thresh = cv2.dilate(thresh, None, iterations=2)
             contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            print(f"Number of contours detected: {len(contours)}")
             for c in contours:
                 if cv2.contourArea(c) > 1000:
                     (x, y, w, h) = cv2.boundingRect(c)
@@ -290,7 +301,7 @@ def capture_frames():
 
         if tracker and success:
             cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-            cv2.putText(frame, "Object", (x, y - 10),
+            cv2.putText(frame, "Movida", (x, y - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
         if alert_active:
@@ -343,14 +354,23 @@ def get_status():
     return last_status_result
 
 def generate_stream():
-    global output_frame
+    global output_frame, STREAM_LAST_FRAME_TIME
     while True:
+        current_time = time.time()
+        if STREAM_LAST_FRAME_TIME is not None and (current_time - STREAM_LAST_FRAME_TIME) < (1.0 / STREAM_FPS_MAX):
+            time.sleep((1.0 / STREAM_FPS_MAX) - (current_time - STREAM_LAST_FRAME_TIME))
+            continue
+
         with lock:
             if output_frame is None:
                 continue
-            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), STREAM_QUALITY]
-            _, buffer = cv2.imencode('.jpg', output_frame, encode_param)
-            frame = buffer.tobytes()
+            output_frame_copy = output_frame.copy()
+
+        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), STREAM_QUALITY]
+        _, buffer = cv2.imencode('.jpg', output_frame_copy, encode_param)
+        frame = buffer.tobytes()
+
+        STREAM_LAST_FRAME_TIME = current_time
         yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
 
 @app.route('/')
