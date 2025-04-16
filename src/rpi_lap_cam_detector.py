@@ -25,13 +25,14 @@ MIN_COUNTOUR_AREA = 500  # Minimum area of contour to consider for tracking
 
 # === Streaming quality ===
 STREAM_QUALITY = 35
-STREAM_FPS_MAX = 25
+STREAM_FPS_MAX = 30
 STREAM_LAST_FRAME_TIME = None
+STREAM_SCALING = 0.6
+frame_queue = queue.Queue(maxsize=2)  # keep it small to avoid lag
 
 # === Globals ===
 output_frame = None
 lock = threading.Lock()
-#frame_queue = queue.Queue(maxsize=2)  # keep it small to avoid lag
 
 reset_tracker_flag = False
 new_tracker_type = None
@@ -324,11 +325,11 @@ def capture_frames():
                     cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
 #        print (f"FPS: {fps:.1f}")
 
-        with lock:
-            output_frame = frame.copy()
+#        with lock:
+#            output_frame = frame.copy()
 #        try:
-#            if not frame_queue.full():
-#                frame_queue.put_nowait(frame.copy())
+        if not frame_queue.full():
+            frame_queue.put_nowait(frame.copy())
 #        except queue.Full:
 #            pass  # Drop the frame if no one is consuming
         
@@ -372,19 +373,19 @@ def generate_stream():
     global output_frame, STREAM_LAST_FRAME_TIME
     while True:
         current_time = time.time()
-        if  STREAM_LAST_FRAME_TIME is not None and (current_time - STREAM_LAST_FRAME_TIME) < (1.0 / STREAM_FPS_MAX):
-            time.sleep((1.0 / STREAM_FPS_MAX) - (current_time - STREAM_LAST_FRAME_TIME))
-            continue
-
-        with lock:
-            if output_frame is None:
-                continue
-            output_frame_copy = output_frame.copy()
-
-#        try:
-#            output_frame_copy = frame_queue.get(timeout=1)  # waits for next frame
-#        except queue.Empty:
+#        if  STREAM_LAST_FRAME_TIME is not None and (current_time - STREAM_LAST_FRAME_TIME) < (1.0 / STREAM_FPS_MAX):
+#            time.sleep((1.0 / STREAM_FPS_MAX) - (current_time - STREAM_LAST_FRAME_TIME))
 #            continue
+
+#        with lock:
+#            if output_frame is None:
+#                continue
+#            output_frame_copy = output_frame.copy()
+
+        try:
+            output_frame_copy = frame_queue.get(timeout=1)  # waits for next frame
+        except queue.Empty:
+            continue
 #        while not frame_queue.empty():
 #            output_frame_copy = frame_queue.get()
 
@@ -395,6 +396,7 @@ def generate_stream():
 
         STREAM_LAST_FRAME_TIME = current_time
         yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+
 
 @app.route('/')
 def index():
