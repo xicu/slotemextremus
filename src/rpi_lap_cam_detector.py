@@ -11,8 +11,8 @@ import subprocess
 app = Flask(__name__)
 
 # === Config ===
-FRAME_WIDTH = 1200  # Capture width, native being 1536 for a pi cam 3
-FRAME_HEIGHT = 600  # Capture height, native being 864 for a pi cam 3
+FRAME_WIDTH = 1280  # Capture width, native being 1536 for a pi cam 3
+FRAME_HEIGHT = 720  # Capture height, native being 864 for a pi cam 3
 FRAME_SCALING = 0.5 # Scaling ratio for processing efficiency
 FRAME_FPS = 100
 
@@ -27,12 +27,11 @@ MIN_COUNTOUR_AREA = 500  # Minimum area of contour to consider for tracking
 STREAM_QUALITY = 35
 STREAM_FPS_MAX = 30
 STREAM_LAST_FRAME_TIME = None
-STREAM_SCALING = 0.6
+STREAM_SCALING = 1
 frame_queue = queue.Queue(maxsize=2)  # keep it small to avoid lag
 
 # === Globals ===
 output_frame = None
-lock = threading.Lock()
 
 reset_tracker_flag = False
 new_tracker_type = None
@@ -200,6 +199,7 @@ config = picam2.create_preview_configuration(
 picam2.configure(config)
 picam2.start()
 
+
 def capture_frames():
     global output_frame, tracker, cooldown, alert_active
     global crossing_history, reset_tracker_flag, recalibrate_flag
@@ -208,8 +208,13 @@ def capture_frames():
 
     prev_frame_time = time.time()
 
+    fps_temp_counter = 0
+    fps_temp_start = time.time()
+    fps_temp_slowest_frame = 1
+    
     while True:
         frame = picam2.capture_array()
+        # consider INTER_LINEAR
         resized = cv2.resize(frame, (int(frame.shape[1] * FRAME_SCALING), int(frame.shape[0] * FRAME_SCALING)), interpolation=cv2.INTER_AREA)
         gray = cv2.cvtColor(resized, cv2.COLOR_RGB2GRAY)
 
@@ -318,25 +323,52 @@ def capture_frames():
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
             alert_active = False
 
+        # FPS monitoring        
         curr_frame_time = time.time()
-        fps = 1.0 / (curr_frame_time - prev_frame_time)
-        prev_frame_time = curr_frame_time
-        cv2.putText(frame, f"FPS: {fps:.1f}", (10, 50),
+        curr_frame_lapse = curr_frame_time - prev_frame_time
+        fps = 1.0 / (curr_frame_lapse)
+        cv2.putText(frame, f"FPS: {fps:.2f}", (10, 50),
                     cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
-#        print (f"FPS: {fps:.1f}")
+        prev_frame_time = curr_frame_time
+        fps_temp_counter += 1
+        if curr_frame_lapse > fps_temp_slowest_frame:
+            fps_temp_slowest_frame = curr_frame_lapse
+        if curr_frame_time - fps_temp_start > 1:
+            print(f"FPS: avg - {fps_temp_counter}; slowest - {1.0/fps_temp_slowest_frame:.2f}")
+            fps_temp_counter = 0
+            fps_temp_slowest_frame = 0
+            fps_temp_start = curr_frame_time
 
-#        with lock:
-#            output_frame = frame.copy()
-#        try:
         if not frame_queue.full():
             frame_queue.put_nowait(frame.copy())
-#        except queue.Full:
-#            pass  # Drop the frame if no one is consuming
-        
+
         time.sleep(0.005)  # gentle with other threads
 
 
 # === Flask Routes ===
+def generate_stream():
+    global output_frame, STREAM_LAST_FRAME_TIME
+    while True:
+        current_time = time.time()
+#        if  STREAM_LAST_FRAME_TIME is not None and (current_time - STREAM_LAST_FRAME_TIME) < (1.0 / STREAM_FPS_MAX):
+#            time.sleep((1.0 / STREAM_FPS_MAX) - (current_time - STREAM_LAST_FRAME_TIME))
+#            continue
+
+        try:
+            output_frame_copy = frame_queue.get(timeout=1)  # waits for next frame
+        except queue.Empty:
+            continue
+
+#        resized = cv2.resize(output_frame_copy, (int(output_frame_copy.shape[1] * STREAM_SCALING), int(output_frame_copy.shape[0] * STREAM_SCALING)), interpolation=cv2.INTER_LINEAR)
+
+        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), STREAM_QUALITY]
+        _, buffer = cv2.imencode('.jpg', output_frame_copy, encode_param)
+        frame = buffer.tobytes()
+
+        STREAM_LAST_FRAME_TIME = current_time
+        yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+
+
 @app.route('/get_status')
 def get_status():
     global last_status_time, last_status_result
@@ -369,34 +401,6 @@ def get_status():
 
     return last_status_result
 
-def generate_stream():
-    global output_frame, STREAM_LAST_FRAME_TIME
-    while True:
-        current_time = time.time()
-#        if  STREAM_LAST_FRAME_TIME is not None and (current_time - STREAM_LAST_FRAME_TIME) < (1.0 / STREAM_FPS_MAX):
-#            time.sleep((1.0 / STREAM_FPS_MAX) - (current_time - STREAM_LAST_FRAME_TIME))
-#            continue
-
-#        with lock:
-#            if output_frame is None:
-#                continue
-#            output_frame_copy = output_frame.copy()
-
-        try:
-            output_frame_copy = frame_queue.get(timeout=1)  # waits for next frame
-        except queue.Empty:
-            continue
-#        while not frame_queue.empty():
-#            output_frame_copy = frame_queue.get()
-
-
-        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), STREAM_QUALITY]
-        _, buffer = cv2.imencode('.jpg', output_frame_copy, encode_param)
-        frame = buffer.tobytes()
-
-        STREAM_LAST_FRAME_TIME = current_time
-        yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
-
 
 @app.route('/')
 def index():
@@ -406,8 +410,8 @@ def index():
         line_x=LINE_X,
         min_y=MIN_Y,
         max_y=MAX_Y,
-        width=FRAME_WIDTH,
-        height=FRAME_HEIGHT,
+        width=int(FRAME_WIDTH*STREAM_SCALING),
+        height=int(FRAME_HEIGHT*STREAM_SCALING),
         cpu_usage="Calculating...",
         cpu_temp="N/A",
         cpu_freq="0",
