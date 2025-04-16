@@ -11,18 +11,21 @@ import subprocess
 app = Flask(__name__)
 
 # === Config ===
-FRAME_WIDTH = 1200 #1536
-FRAME_HEIGHT = 600 #864
+FRAME_WIDTH = 1200  # Capture width, native being 1536 for a pi cam 3
+FRAME_HEIGHT = 600  # Capture height, native being 864 for a pi cam 3
+FRAME_SCALING = 0.5 # Scaling ratio for processing efficiency
 FRAME_FPS = 100
+
 LINE_X = FRAME_WIDTH // 2
 COOLDOWN_FRAMES = 15
 MIN_CONFIDENCE = 0.4
 MIN_Y = 0
 MAX_Y = FRAME_HEIGHT
+MIN_COUNTOUR_AREA = 500  # Minimum area of contour to consider for tracking
 
 # === Streaming quality ===
-STREAM_QUALITY = 40
-STREAM_FPS_MAX = 30
+STREAM_QUALITY = 35
+STREAM_FPS_MAX = 25
 STREAM_LAST_FRAME_TIME = None
 
 # === Globals ===
@@ -206,7 +209,7 @@ def capture_frames():
 
     while True:
         frame = picam2.capture_array()
-        resized = cv2.resize(frame, (frame.shape[1] // 2, frame.shape[0] // 2), interpolation=cv2.INTER_AREA)
+        resized = cv2.resize(frame, (int(frame.shape[1] * FRAME_SCALING), int(frame.shape[0] * FRAME_SCALING)), interpolation=cv2.INTER_AREA)
         gray = cv2.cvtColor(resized, cv2.COLOR_RGB2GRAY)
 
 
@@ -252,9 +255,9 @@ def capture_frames():
 
                 last_position = (center_x, center_y)
 
-                left_cross = x <= LINE_X <= x + w
-                right_cross = (x + w) >= LINE_X >= x
-                direction = "RIGHT" if center_x > LINE_X else "LEFT"
+                left_cross = x <= LINE_X*FRAME_SCALING <= x + w
+                right_cross = (x + w) >= LINE_X*FRAME_SCALING >= x
+                direction = "RIGHT" if center_x > LINE_X*FRAME_SCALING else "LEFT"
 
                 if (left_cross or right_cross) and cooldown == 0:
                     has_crossed_line = True
@@ -266,13 +269,15 @@ def capture_frames():
                         cooldown = COOLDOWN_FRAMES
 
                 if tracker_start_time and time.time() - tracker_start_time > 5:
-                    if not moved and not has_crossed_line:
+                    if True: # not moved and not has_crossed_line:
                         tracker = None
                         tracker_start_time = None
                         last_position = None
                         has_crossed_line = False
+                        direction = "N/A"
                         continue
             else:
+                # Reset the tracker if the object leaves the frame
                 tracker = None
                 tracker_start_time = None
                 last_position = None
@@ -282,15 +287,15 @@ def capture_frames():
             blur = cv2.GaussianBlur(gray, (21, 21), 0)
             if not hasattr(init_tracker, 'avg'):
                 init_tracker.avg = blur.copy().astype("float")
-            cv2.accumulateWeighted(blur, init_tracker.avg, 0.5)
+            cv2.accumulateWeighted(blur, init_tracker.avg, 0.2)
             frame_delta = cv2.absdiff(blur, cv2.convertScaleAbs(init_tracker.avg))
-            thresh = cv2.threshold(frame_delta, 25, 255, cv2.THRESH_BINARY)[1]
+            thresh = cv2.threshold(frame_delta, 15, 255, cv2.THRESH_BINARY)[1]
             thresh = cv2.dilate(thresh, None, iterations=2)
             contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             for c in contours:
-                if cv2.contourArea(c) > 1000:
+                if cv2.contourArea(c) > (MIN_COUNTOUR_AREA*FRAME_SCALING*FRAME_SCALING):
                     (x, y, w, h) = cv2.boundingRect(c)
-                    if y < MIN_Y or y + h > MAX_Y:
+                    if y < MIN_Y*FRAME_SCALING or y + h > MAX_Y*FRAME_SCALING:
                         continue
                     tracker = init_tracker(gray, (x, y, w, h))
                     tracker_start_time = time.time()  # ADDED
@@ -303,8 +308,8 @@ def capture_frames():
         cv2.line(frame, (LINE_X, 0), (LINE_X, FRAME_HEIGHT), (0, 255, 0), 2)
 
         if tracker and success:
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-            cv2.putText(frame, "Movida", (x, y - 10),
+            cv2.rectangle(frame, (int(x/FRAME_SCALING), int(y/FRAME_SCALING)), (int(x/FRAME_SCALING + w/FRAME_SCALING), int(y/FRAME_SCALING + h/FRAME_SCALING)), (0, 255, 0), 2)
+            cv2.putText(frame, "Movida", (int(x/FRAME_SCALING), int(y/FRAME_SCALING) - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
         if alert_active:
