@@ -127,6 +127,13 @@ setInterval(updateSystemInfo, 3000);
 </script>
 """
 
+from enum import Enum, auto
+
+class SystemMode(Enum):
+    DETECTING = auto()
+    TRACKING = auto()
+    COOL_DOWN = auto()
+
 # === Tracker Setup ===
 def get_available_trackers():
     trackers = {
@@ -135,7 +142,6 @@ def get_available_trackers():
         'KCF': cv2.legacy.TrackerKCF_create if hasattr(cv2.legacy, 'TrackerKCF_create') else None
     }
     return {name: create for name, create in trackers.items() if create}
-
 AVAILABLE_TRACKERS = get_available_trackers()
 TRACKER_TYPE = list(AVAILABLE_TRACKERS.keys())[0]
 
@@ -219,6 +225,7 @@ else:
 picam2.configure(config)
 picam2.start()
 
+current_mode = SystemMode.DETECTING
 
 def capture_frames():
     global output_frame, tracker, cooldown, alert_active
@@ -226,6 +233,7 @@ def capture_frames():
     global direction, new_tracker_type, TRACKER_TYPE, LINE_X
     global tracker_start_time, last_position, has_crossed_line
     global fps_global_string
+    global current_mode
 
     prev_frame_time = time.time()
     prev_streamed_time = time.time()
@@ -271,6 +279,7 @@ def capture_frames():
         if cooldown > 0:
             cooldown -= 1
 
+        # Tracking mode
         success = False
         if tracker:
             success, bbox = tracker.update(gray)
@@ -316,7 +325,9 @@ def capture_frames():
                 last_position = None
                 has_crossed_line = False
                 direction = "N/A"
-        elif False:
+        
+        # Detecting mode
+        elif current_mode != SystemMode.COOL_DOWN:
             blur = cv2.GaussianBlur(gray, (21, 21), 0)
             if not hasattr(init_tracker, 'avg'):
                 init_tracker.avg = blur.copy().astype("float")
@@ -336,6 +347,7 @@ def capture_frames():
                     has_crossed_line = False          # ADDED
                     break
 
+        # Frame beautification
         cv2.line(frame, (0, MIN_Y), (FRAME_WIDTH, MIN_Y), (0, 0, 255), 2)
         cv2.line(frame, (0, MAX_Y), (FRAME_WIDTH, MAX_Y), (0, 0, 255), 2)
         cv2.line(frame, (LINE_X, 0), (LINE_X, FRAME_HEIGHT), (0, 255, 0), 2)
@@ -381,7 +393,6 @@ def capture_frames():
 
 # === Flask Routes ===
 def generate_stream():
-    global STREAM_LAST_FRAME_TIME
     try:
         while True:
             current_time = time.time()
@@ -394,7 +405,6 @@ def generate_stream():
             _, buffer = cv2.imencode('.jpg', output_frame_copy, encode_param)
             frame = buffer.tobytes()
 
-            STREAM_LAST_FRAME_TIME = current_time
             yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
     except GeneratorExit:
         print("Client disconnected from video stream")
