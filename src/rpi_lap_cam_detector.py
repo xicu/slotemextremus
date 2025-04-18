@@ -14,7 +14,8 @@ app = Flask(__name__)
 FRAME_WIDTH = 1280  # Capture width, native being 1536 for a pi cam 3
 FRAME_HEIGHT = 720  # Capture height, native being 864 for a pi cam 3
 FRAME_SCALING = 0.5 # Scaling ratio for processing efficiency
-FRAME_FPS = 100
+FRAME_FPS = 120
+DUAL_STREAM_MODE = False
 
 LINE_X = FRAME_WIDTH // 2
 COOLDOWN_FRAMES = 15
@@ -189,13 +190,28 @@ def reset_autofocus():
 # === Camera Setup ===
 picam2 = Picamera2()
 print(picam2.sensor_modes)
-config = picam2.create_preview_configuration(
-    main={
-        "format": 'RGB888',
-        "size": (FRAME_WIDTH, FRAME_HEIGHT)
-    },
-    controls={"FrameRate": FRAME_FPS}
-)
+if not DUAL_STREAM_MODE:
+    config = picam2.create_preview_configuration(
+       main={
+            "format": 'RGB888',
+            "size": (FRAME_WIDTH, FRAME_HEIGHT)
+        },
+        controls={"FrameRate": FRAME_FPS},
+        buffer_count=10,
+#        queue=False,
+    )
+else:
+    config = picam2.create_preview_configuration(
+       main={
+            "format": 'RGB888',
+            "size": (FRAME_WIDTH, FRAME_HEIGHT)
+        },
+        lores={
+            "format": 'YUV420',
+            "size": (int(FRAME_WIDTH*FRAME_SCALING), int(FRAME_HEIGHT*FRAME_SCALING))
+        },
+        controls={"FrameRate": FRAME_FPS}
+    )
 picam2.configure(config)
 picam2.start()
 
@@ -213,11 +229,17 @@ def capture_frames():
     fps_temp_slowest_frame = 1
     
     while True:
-        frame = picam2.capture_array()
-        # consider INTER_LINEAR
-        resized = cv2.resize(frame, (int(frame.shape[1] * FRAME_SCALING), int(frame.shape[0] * FRAME_SCALING)), interpolation=cv2.INTER_AREA)
-        gray = cv2.cvtColor(resized, cv2.COLOR_RGB2GRAY)
+        frame = picam2.capture_array("main")
 
+        if DUAL_STREAM_MODE:
+            resized = picam2.capture_array("lores")
+            width, height = picam2.stream_configuration("lores")["size"]
+            # Efficient grayscale extraction from YUV402 to avoid color conversion
+            gray = resized[:height, :width]
+        else:
+            # consider INTER_LINEAR
+            resized = cv2.resize(frame, (int(frame.shape[1] * FRAME_SCALING), int(frame.shape[0] * FRAME_SCALING)), interpolation=cv2.INTER_AREA)
+            gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
 
         if reset_tracker_flag:
             tracker = None
