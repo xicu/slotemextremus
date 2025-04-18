@@ -43,6 +43,7 @@ cooldown = 0
 tracker = None
 crossing_history = []
 direction = "N/A"
+fps_global_string = "Calculating..."
 
 TRACKER_TYPE = None
 last_status_time = 0
@@ -86,6 +87,7 @@ HTML_PAGE = """
 <button onclick="fetch('/reset_autofocus')">Reset Autofocus</button>
 
 <h2>System Info:</h2>
+<p><strong>FPS:</strong> <span id="fpsSummary">Calculating...</span></p>
 <p><strong>CPU Usage:</strong> <span id="cpuUsage">Calculating...</span></p>
 <p><strong>CPU Temperature:</strong> <span id="cpuTemp">N/A</span></p>
 <p><strong>CPU Frequency:</strong> <span id="cpuFreq">0</span></p>
@@ -112,6 +114,7 @@ function updateSystemInfo() {
     fetch('/get_status')
         .then(response => response.json())
         .then(data => {
+            document.getElementById("fpsSummary").innerText = data.fps_summary;
             document.getElementById("cpuUsage").innerText = data.cpu_usage;
             document.getElementById("cpuTemp").innerText = data.cpu_temp;
             document.getElementById("cpuFreq").innerText = data.cpu_freq;
@@ -197,7 +200,7 @@ if not DUAL_STREAM_MODE:
             "size": (FRAME_WIDTH, FRAME_HEIGHT)
         },
         controls={"FrameRate": FRAME_FPS},
-        buffer_count=10,
+#        buffer_count=10,
 #        queue=False,
     )
 else:
@@ -220,7 +223,8 @@ def capture_frames():
     global output_frame, tracker, cooldown, alert_active
     global crossing_history, reset_tracker_flag, recalibrate_flag
     global direction, new_tracker_type, TRACKER_TYPE, LINE_X
-    global tracker_start_time, last_position, has_crossed_line  # ADDED
+    global tracker_start_time, last_position, has_crossed_line
+    global fps_global_string
 
     prev_frame_time = time.time()
 
@@ -234,8 +238,7 @@ def capture_frames():
         if DUAL_STREAM_MODE:
             resized = picam2.capture_array("lores")
             width, height = picam2.stream_configuration("lores")["size"]
-            # Efficient grayscale extraction from YUV402 to avoid color conversion
-            gray = resized[:height, :width]
+            gray = resized[:height, :width] # Efficient grayscale extraction from YUV402 to avoid color conversion
         else:
             # consider INTER_LINEAR
             resized = cv2.resize(frame, (int(frame.shape[1] * FRAME_SCALING), int(frame.shape[0] * FRAME_SCALING)), interpolation=cv2.INTER_AREA)
@@ -244,9 +247,9 @@ def capture_frames():
         if reset_tracker_flag:
             tracker = None
             crossing_history.clear()
-            tracker_start_time = None  # ADDED
-            last_position = None       # ADDED
-            has_crossed_line = False   # ADDED
+            tracker_start_time = None
+            last_position = None
+            has_crossed_line = False
             reset_tracker_flag = False
 
         if recalibrate_flag:
@@ -355,12 +358,18 @@ def capture_frames():
         fps_temp_counter += 1
         if curr_frame_lapse > fps_temp_slowest_frame:
             fps_temp_slowest_frame = curr_frame_lapse
-        if curr_frame_time - fps_temp_start > 1:
-            print(f"FPS: avg - {fps_temp_counter}; slowest - {1.0/fps_temp_slowest_frame:.2f}")
+        if curr_frame_time - fps_temp_start >= 1:
+            fps_global_string = f"FPS: avg - {fps_temp_counter}; slowest - {1.0/fps_temp_slowest_frame:.2f}"
+            print(fps_global_string)
             fps_temp_counter = 0
             fps_temp_slowest_frame = 0
             fps_temp_start = curr_frame_time
 
+#       Theoritecally correct, but slower        
+#        try:
+#            frame_queue.put_nowait(frame.copy())
+#        except queue.Full:
+#            pass  # just skip, or log dropped frames
         if not frame_queue.full():
             frame_queue.put_nowait(frame.copy())
 
@@ -369,26 +378,26 @@ def capture_frames():
 
 # === Flask Routes ===
 def generate_stream():
-    global output_frame, STREAM_LAST_FRAME_TIME
-    while True:
-        current_time = time.time()
-#        if  STREAM_LAST_FRAME_TIME is not None and (current_time - STREAM_LAST_FRAME_TIME) < (1.0 / STREAM_FPS_MAX):
-#            time.sleep((1.0 / STREAM_FPS_MAX) - (current_time - STREAM_LAST_FRAME_TIME))
-#            continue
+    global STREAM_LAST_FRAME_TIME
+    try:
+        while True:
+            current_time = time.time()
+            try:
+                output_frame_copy = frame_queue.get(timeout=1)
+            except queue.Empty:
+                continue
 
-        try:
-            output_frame_copy = frame_queue.get(timeout=1)  # waits for next frame
-        except queue.Empty:
-            continue
+            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), STREAM_QUALITY]
+            _, buffer = cv2.imencode('.jpg', output_frame_copy, encode_param)
+            frame = buffer.tobytes()
 
-#        resized = cv2.resize(output_frame_copy, (int(output_frame_copy.shape[1] * STREAM_SCALING), int(output_frame_copy.shape[0] * STREAM_SCALING)), interpolation=cv2.INTER_LINEAR)
+            STREAM_LAST_FRAME_TIME = current_time
+            yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+    except GeneratorExit:
+        print("Client disconnected from video stream")
+    except Exception as e:
+        print(f"Streaming error: {e}")
 
-        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), STREAM_QUALITY]
-        _, buffer = cv2.imencode('.jpg', output_frame_copy, encode_param)
-        frame = buffer.tobytes()
-
-        STREAM_LAST_FRAME_TIME = current_time
-        yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
 
 
 @app.route('/get_status')
@@ -416,7 +425,8 @@ def get_status():
             'cpu_temp': cpu_temp_text,
             'cpu_freq': cpu_freqs_text,
             'mem_usage': mem_usage_text,
-            'throttling_status': throttling_status_text
+            'throttling_status': throttling_status_text,
+            'fps_summary': fps_global_string
         }
 
         last_status_time = current_time
@@ -438,7 +448,9 @@ def index():
         cpu_temp="N/A",
         cpu_freq="0",
         mem_usage="0",
-        throttling_status="Checking...")
+        throttling_status="Checking...",
+        fps_summary=fps_global_string)
+
 
 
 @app.route('/video_feed')
