@@ -26,7 +26,7 @@ MIN_COUNTOUR_AREA = 500  # Minimum area of contour to consider for tracking
 
 # === Streaming quality ===
 STREAM_QUALITY = 35
-STREAM_FPS_MAX = 30
+STREAM_FPS_MAX = 35
 STREAM_LAST_FRAME_TIME = None
 STREAM_SCALING = 1
 frame_queue = queue.Queue(maxsize=2)  # keep it small to avoid lag
@@ -44,6 +44,7 @@ tracker = None
 crossing_history = []
 direction = "N/A"
 fps_global_string = "Calculating..."
+MONITORING_INTERVAL = 2.0 # seconds
 
 TRACKER_TYPE = None
 last_status_time = 0
@@ -200,8 +201,8 @@ if not DUAL_STREAM_MODE:
             "size": (FRAME_WIDTH, FRAME_HEIGHT)
         },
         controls={"FrameRate": FRAME_FPS},
-#        buffer_count=10,
-#        queue=False,
+#        buffer_count=10,   # Buffer count for preview
+#        queue=False,       # Risky...
     )
 else:
     config = picam2.create_preview_configuration(
@@ -227,6 +228,7 @@ def capture_frames():
     global fps_global_string
 
     prev_frame_time = time.time()
+    prev_streamed_time = time.time()
 
     fps_temp_counter = 0
     fps_temp_start = time.time()
@@ -314,7 +316,7 @@ def capture_frames():
                 last_position = None
                 has_crossed_line = False
                 direction = "N/A"
-        else:
+        elif False:
             blur = cv2.GaussianBlur(gray, (21, 21), 0)
             if not hasattr(init_tracker, 'avg'):
                 init_tracker.avg = blur.copy().astype("float")
@@ -358,8 +360,8 @@ def capture_frames():
         fps_temp_counter += 1
         if curr_frame_lapse > fps_temp_slowest_frame:
             fps_temp_slowest_frame = curr_frame_lapse
-        if curr_frame_time - fps_temp_start >= 1:
-            fps_global_string = f"FPS: avg - {fps_temp_counter}; slowest - {1.0/fps_temp_slowest_frame:.2f}"
+        if curr_frame_time - fps_temp_start >= MONITORING_INTERVAL:
+            fps_global_string = f"avg - {fps_temp_counter/MONITORING_INTERVAL:.1f}; slowest - {1.0/fps_temp_slowest_frame:.1f}"
             print(fps_global_string)
             fps_temp_counter = 0
             fps_temp_slowest_frame = 0
@@ -370,7 +372,8 @@ def capture_frames():
 #            frame_queue.put_nowait(frame.copy())
 #        except queue.Full:
 #            pass  # just skip, or log dropped frames
-        if not frame_queue.full():
+        if curr_frame_time - prev_streamed_time >= 1.0/STREAM_FPS_MAX and not frame_queue.full():
+            prev_streamed_time = curr_frame_time
             frame_queue.put_nowait(frame.copy())
 
         time.sleep(0.005)  # gentle with other threads
@@ -405,7 +408,7 @@ def get_status():
     global last_status_time, last_status_result
     current_time = time.time()
 
-    if current_time - last_status_time >= 2:
+    if current_time - last_status_time >= MONITORING_INTERVAL:
         cpu_usage = psutil.cpu_percent(interval=None)
         per_cpu = psutil.cpu_percent(interval=None, percpu=True)
         cpu_usage_text = f"{cpu_usage:.1f}% ({', '.join(f'{u:.1f}' for u in per_cpu)})"
@@ -450,7 +453,6 @@ def index():
         mem_usage="0",
         throttling_status="Checking...",
         fps_summary=fps_global_string)
-
 
 
 @app.route('/video_feed')
