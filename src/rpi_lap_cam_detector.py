@@ -352,23 +352,26 @@ def capture_frames():
             thresh = cv2.dilate(thresh, None, iterations=2)
             contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
+            largest_contour = None
+            max_area = 0
             for c in contours:
-                if cv2.contourArea(c) > (MIN_COUNTOUR_AREA * FRAME_SCALING * FRAME_SCALING):
-                    (x, y, w, h) = cv2.boundingRect(c)
-                    if y < MIN_Y * FRAME_SCALING or y + h > MAX_Y * FRAME_SCALING:
-                        continue
-                    # Try to initialize tracker
-                    try:
-                        tracker = init_tracker(current_frame_gray, (x, y, w, h))
-                        tracker_start_time = current_frame_time
-                        tracker_last_success_time = current_frame_time
-                        last_position = None
-                        current_mode = SystemMode.TRACKING
-                        print(">>> TRACKING mode after contour found")
-                    except Exception as e:
-                        print(f">>> Tracker init failed: {e}. Staying in DETECTING mode.")
-                        current_mode = SystemMode.DETECTING
-                    break
+                area = cv2.contourArea(c)
+                if area > (MIN_COUNTOUR_AREA * FRAME_SCALING * FRAME_SCALING) and area > max_area:
+                    largest_contour = c
+                    max_area = area
+
+            if largest_contour is not None:
+                (x, y, w, h) = cv2.boundingRect(largest_contour)
+                try:
+                    tracker = init_tracker(current_frame_gray, (x, y, w, h))
+                    tracker_start_time = current_frame_time
+                    tracker_last_success_time = current_frame_time
+                    last_position = None
+                    current_mode = SystemMode.TRACKING
+                    print(">>> TRACKING mode after largest contour found")
+                except Exception as e:
+                    print(f">>> Tracker init failed: {e}. Staying in DETECTING mode.")
+                #break
 
         # Flash on detection
         if last_crossing_time and abs(last_crossing_time - current_frame_time) < CROSSING_FLASH_TIME:
