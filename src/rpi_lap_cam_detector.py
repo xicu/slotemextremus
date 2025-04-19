@@ -25,13 +25,10 @@ MIN_COUNTOUR_AREA = 500  # Minimum area of contour to consider for tracking
 # === Streaming quality ===
 STREAM_QUALITY = 35
 STREAM_FPS_MAX = 35
-STREAM_LAST_FRAME_TIME = None
 STREAM_SCALING = 1
-frame_queue = queue.Queue(maxsize=2)  # keep it small to avoid lag
+streaming_frame_queue = queue.Queue(maxsize=2)  # smoother than a lock
 
 # === Globals ===
-output_frame = None
-
 reset_tracker_flag = False
 new_tracker_type = None
 recalibrate_flag = False
@@ -232,7 +229,7 @@ current_mode = SystemMode.COOL_DOWN
 cooldown_until = 0
 
 def capture_frames():
-    global output_frame, tracker, last_crossing_time
+    global tracker, last_crossing_time
     global reset_tracker_flag, recalibrate_flag
     global direction, new_tracker_type, TRACKER_TYPE, LINE_X
     global tracker_start_time, last_position
@@ -424,9 +421,9 @@ def capture_frames():
 #            frame_queue.put_nowait(frame.copy())
 #        except queue.Full:
 #            pass  # just skip, or log dropped frames
-        if curr_frame_time - prev_streamed_time >= 1.0/STREAM_FPS_MAX and not frame_queue.full():
+        if curr_frame_time - prev_streamed_time >= 1.0/STREAM_FPS_MAX and not streaming_frame_queue.full():
             prev_streamed_time = curr_frame_time
-            frame_queue.put_nowait(frame.copy())
+            streaming_frame_queue.put_nowait(frame.copy())
 
         time.sleep(0.001)   # Avoid suffocating the CPU
 
@@ -437,7 +434,7 @@ def generate_stream():
         while True:
             current_time = time.time()
             try:
-                output_frame_copy = frame_queue.get(timeout=1)
+                output_frame_copy = streaming_frame_queue.get(timeout=1)
             except queue.Empty:
                 continue
 
