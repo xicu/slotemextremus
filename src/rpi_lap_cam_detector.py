@@ -39,7 +39,8 @@ last_crossing_time = None
 last_crossing_direction = "N/A"
 CROSSING_FLASH_TIME = 0.5
 COOL_DOWN_TIME = 1.0
-TRACKING_TIME = 6.0
+TRACKING_TIMEOUT = 6.0              # Max time in the same tracker
+TRACKING_RESILIENCE_LIMIT = 0.05    # Max time without tracking success
 TRACKER_TYPE = None
 tracker = None
 fps_global_string = "Calculating..."
@@ -233,7 +234,7 @@ def capture_frames():
     global tracker, last_crossing_time
     global reset_tracker_flag, recalibrate_flag
     global last_crossing_direction, new_tracker_type, TRACKER_TYPE, LINE_X
-    global tracker_start_time, last_position
+    global tracker_start_time, last_position, tracker_last_success_time
     global fps_global_string
     global current_mode, cooldown_until
 
@@ -244,21 +245,21 @@ def capture_frames():
     fps_temp_start = time.time()
     fps_temp_slowest_frame = 1
 
-    print(">>> Starting frame capture in COOL_DOWN mode")
+    print(">>> COOL_DOWN mode set to start")
     cooldown_until = time.time() + COOL_DOWN_TIME
 
     while True:
-        current_time = time.time()
-        frame = picam2.capture_array("main")
+        current_frame_time = time.time()
+        current_frame = picam2.capture_array("main")
 
         if DUAL_STREAM_MODE:
-            resized = picam2.capture_array("lores")
+            current_frame_resized = picam2.capture_array("lores")
             width, height = picam2.stream_configuration("lores")["size"]
-            gray = resized[:height, :width] # Efficient grayscale extraction from YUV402 to avoid color conversion
+            current_frame_gray = current_frame_resized[:height, :width] # Efficient grayscale extraction from YUV402 to avoid color conversion
         else:
             # consider INTER_LINEAR
-            resized = cv2.resize(frame, (int(frame.shape[1] * FRAME_SCALING), int(frame.shape[0] * FRAME_SCALING)), interpolation=cv2.INTER_AREA)
-            gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
+            current_frame_resized = cv2.resize(current_frame, (int(current_frame.shape[1] * FRAME_SCALING), int(current_frame.shape[0] * FRAME_SCALING)), interpolation=cv2.INTER_AREA)
+            current_frame_gray = cv2.cvtColor(current_frame_resized, cv2.COLOR_BGR2GRAY)
 
         if reset_tracker_flag:
             tracker = None
@@ -278,25 +279,25 @@ def capture_frames():
             last_position = None
             new_tracker_type = None
 
-        if current_mode == SystemMode.COOL_DOWN and current_time >= cooldown_until:
+        if current_mode == SystemMode.COOL_DOWN and current_frame_time >= cooldown_until:
             current_mode = SystemMode.DETECTING
             if hasattr(init_tracker, 'avg'):
                 del init_tracker.avg    # Recalibrating after every cool down
-            print(">>> COOL_DOWN finished, switching to DETECTING mode")
+            print(">>> DETECTING mode after COOL_DOWN finished")
 
         if current_mode == SystemMode.TRACKING:
-            success, bbox = tracker.update(gray)
+            success, bbox = tracker.update(current_frame_gray)
             if success:
                 x, y, w, h = [int(v) for v in bbox]
                 center_x = x + w // 2
                 center_y = y + h // 2
 
                 # Check if object has left the visible frame
-                frame_height, frame_width = gray.shape[:2]
+                frame_height, frame_width = current_frame_gray.shape[:2]
                 if not (0 <= center_x < frame_width and 0 <= center_y < frame_height):
-                    print(">>> Object left the frame! Switching to COOL_DOWN mode")
+                    print(">>> COOL_DOWN mode after object left the frame")
                     current_mode = SystemMode.COOL_DOWN
-                    cooldown_until = current_time + COOL_DOWN_TIME
+                    cooldown_until = current_frame_time + COOL_DOWN_TIME
                     tracker = None
                     tracker_start_time = None
                     last_position = None
@@ -308,20 +309,20 @@ def capture_frames():
                     prev_x = last_position[0]
                     if prev_x < LINE_X * FRAME_SCALING and center_x >= LINE_X * FRAME_SCALING:
                         last_crossing_direction = "RIGHT"
-                        last_crossing_time = current_time
+                        last_crossing_time = current_frame_time
                         print(f">>> Object crossed line from LEFT to RIGHT")
                     elif prev_x > LINE_X * FRAME_SCALING and center_x <= LINE_X * FRAME_SCALING:
                         last_crossing_direction = "LEFT"
-                        last_crossing_time = current_time
+                        last_crossing_time = current_frame_time
                         print(f">>> Object crossed line from RIGHT to LEFT")
                     else:
                         last_crossing_direction = "N/A"
 
                 # Check if the tracker has been active for too long
-                if tracker_start_time and current_time - tracker_start_time > TRACKING_TIME:
+                if tracker_start_time and current_frame_time - tracker_start_time > TRACKING_TIMEOUT:
                     current_mode = SystemMode.COOL_DOWN
-                    print(">>> Tracker timeout! Switching to COOL_DOWN mode")
-                    cooldown_until = current_time + COOL_DOWN_TIME
+                    print(">>> COOL_DOWN mode after tracker timeout")
+                    cooldown_until = current_frame_time + COOL_DOWN_TIME
                     tracker = None
                     tracker_start_time = None
                     last_position = None
@@ -329,20 +330,20 @@ def capture_frames():
                     continue
 
                 last_position = (center_x, center_y)
+                tracker_last_success_time = current_frame_time
 
             else:
                 # Tracking failed
-                # Should we stay in TRACKING mode for a while?
-                # If the object is not detected for a while, switch to COOL_DOWN mode
-                current_mode = SystemMode.DETECTING
-                print(">>> Tracking failed! Switching to DETECTING mode")
-                tracker = None
-                tracker_start_time = None
-                last_position = None
-                last_crossing_direction = "N/A"
+                if tracker_last_success_time and current_frame_time - tracker_last_success_time > TRACKING_RESILIENCE_LIMIT:
+                    current_mode = SystemMode.DETECTING
+                    print(">>> DETECTING mode after tracking resilience limit exceeded")
+                    tracker = None
+                    tracker_start_time = None
+                    last_position = None
+                    last_crossing_direction = "N/A"
 
         elif current_mode == SystemMode.DETECTING:
-            blur = cv2.GaussianBlur(gray, (21, 21), 0)
+            blur = cv2.GaussianBlur(current_frame_gray, (21, 21), 0)
             if not hasattr(init_tracker, 'avg'):
                 init_tracker.avg = blur.copy().astype("float")
             cv2.accumulateWeighted(blur, init_tracker.avg, 0.2)
@@ -358,31 +359,32 @@ def capture_frames():
                         continue
                     # Try to initialize tracker
                     try:
-                        tracker = init_tracker(gray, (x, y, w, h))
-                        tracker_start_time = current_time
+                        tracker = init_tracker(current_frame_gray, (x, y, w, h))
+                        tracker_start_time = current_frame_time
+                        tracker_last_success_time = current_frame_time
                         last_position = None
                         current_mode = SystemMode.TRACKING
-                        print(">>> Starting tracking...")
+                        print(">>> TRACKING mode after contour found")
                     except Exception as e:
                         print(f">>> Tracker init failed: {e}. Staying in DETECTING mode.")
                         current_mode = SystemMode.DETECTING
                     break
 
         # Flash on detection
-        if last_crossing_time and abs(last_crossing_time - current_time) < CROSSING_FLASH_TIME:
-            alpha = 1.0 - (abs(last_crossing_time - current_time) / CROSSING_FLASH_TIME)
-            overlay = np.full_like(frame, 255)  # White overlay
-            cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
+        if last_crossing_time and abs(last_crossing_time - current_frame_time) < CROSSING_FLASH_TIME:
+            alpha = 1.0 - (abs(last_crossing_time - current_frame_time) / CROSSING_FLASH_TIME)
+            overlay = np.full_like(current_frame, 255)  # White overlay
+            cv2.addWeighted(overlay, alpha, current_frame, 1 - alpha, 0, current_frame)
 
         # Lines
-        cv2.line(frame, (0, MIN_Y), (FRAME_WIDTH, MIN_Y), (0, 0, 255), 2)
-        cv2.line(frame, (0, MAX_Y), (FRAME_WIDTH, MAX_Y), (0, 0, 255), 2)
-        cv2.line(frame, (LINE_X, 0), (LINE_X, FRAME_HEIGHT), (0, 255, 0), 2)
+        cv2.line(current_frame, (0, MIN_Y), (FRAME_WIDTH, MIN_Y), (0, 0, 255), 2)
+        cv2.line(current_frame, (0, MAX_Y), (FRAME_WIDTH, MAX_Y), (0, 0, 255), 2)
+        cv2.line(current_frame, (LINE_X, 0), (LINE_X, FRAME_HEIGHT), (0, 255, 0), 2)
 
         # Bounding box
         if tracker and last_position:
-            cv2.rectangle(frame, (int(x/FRAME_SCALING), int(y/FRAME_SCALING)), (int(x/FRAME_SCALING + w/FRAME_SCALING), int(y/FRAME_SCALING + h/FRAME_SCALING)), (0, 255, 0), 2)
-            cv2.putText(frame, "Movida", (int(x/FRAME_SCALING), int(y/FRAME_SCALING) - 10),
+            cv2.rectangle(current_frame, (int(x/FRAME_SCALING), int(y/FRAME_SCALING)), (int(x/FRAME_SCALING + w/FRAME_SCALING), int(y/FRAME_SCALING + h/FRAME_SCALING)), (0, 255, 0), 2)
+            cv2.putText(current_frame, "Movida", (int(x/FRAME_SCALING), int(y/FRAME_SCALING) - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
         # Time and FPS calculation
@@ -414,7 +416,7 @@ def capture_frames():
 
         # Display FPS on the frame
         color = mode_colors.get(current_mode, (255, 255, 255))
-        cv2.putText(frame, f"{fps_string}", (10, 50),
+        cv2.putText(current_frame, f"{fps_string}", (10, 50),
                     cv2.FONT_HERSHEY_SIMPLEX, 1.0, color, 2)
 
 #       Theoritecally correct, but slower        
@@ -424,7 +426,7 @@ def capture_frames():
 #            pass  # just skip, or log dropped frames
         if curr_frame_time - prev_streamed_time >= 1.0/STREAM_FPS_MAX and not streaming_frame_queue.full():
             prev_streamed_time = curr_frame_time
-            streaming_frame_queue.put_nowait(frame.copy())
+            streaming_frame_queue.put_nowait(current_frame.copy())
 
         time.sleep(0.001)   # Avoid suffocating the CPU
 
