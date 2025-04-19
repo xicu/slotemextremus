@@ -56,8 +56,8 @@ last_position = None
 # === Flask HTML Template ===
 HTML_PAGE = """
 <!doctype html>
-<title>Raspberry Pi Stream</title>
-<h1>Live Object Tracking</h1>
+<title>Slotem Extremus Rpi</title>
+<h1>Slotem Extremus Raspberry Pi detector</h1>
 
 <img src="{{ url_for('video_feed') }}" style="width: {{ width }}px;"><br><br>
 
