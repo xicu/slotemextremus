@@ -18,8 +18,6 @@ FRAME_FPS = 120
 DUAL_STREAM_MODE = False
 
 LINE_X = FRAME_WIDTH // 2
-COOLDOWN_FRAMES = 15
-MIN_CONFIDENCE = 0.4
 MIN_Y = 0
 MAX_Y = FRAME_HEIGHT
 MIN_COUNTOUR_AREA = 500  # Minimum area of contour to consider for tracking
@@ -38,21 +36,22 @@ reset_tracker_flag = False
 new_tracker_type = None
 recalibrate_flag = False
 
-alert_active = False
+last_crossing_time = None
+CROSSING_FLASH_TIME = 0.5
 COOL_DOWN_TIME = 1.0
 TRACKING_TIME = 6.0
 tracker = None
 direction = "N/A"
 fps_global_string = "Calculating..."
-MONITORING_INTERVAL = 2.0 # seconds
+MONITORING_INTERVAL = 2.5 # seconds
 
 TRACKER_TYPE = None
 last_status_time = 0
 last_status_result = {}
 
 # Tracker timing & movement
-tracker_start_time = None  # ADDED
-last_position = None       # ADDED
+tracker_start_time = None
+last_position = None
 
 # === Flask HTML Template ===
 HTML_PAGE = """
@@ -132,6 +131,11 @@ class SystemMode(Enum):
     DETECTING = auto()
     TRACKING = auto()
     COOL_DOWN = auto()
+mode_colors = {
+    SystemMode.COOL_DOWN: (255, 0, 0),
+    SystemMode.DETECTING: (0, 255, 255),
+    SystemMode.TRACKING: (0, 255, 0),
+}
 
 # === Tracker Setup ===
 def get_available_trackers():
@@ -228,7 +232,7 @@ current_mode = SystemMode.COOL_DOWN
 cooldown_until = 0
 
 def capture_frames():
-    global output_frame, tracker, alert_active
+    global output_frame, tracker, last_crossing_time
     global reset_tracker_flag, recalibrate_flag
     global direction, new_tracker_type, TRACKER_TYPE, LINE_X
     global tracker_start_time, last_position
@@ -246,6 +250,7 @@ def capture_frames():
     cooldown_until = time.time() + COOL_DOWN_TIME
 
     while True:
+        current_time = time.time()
         frame = picam2.capture_array("main")
 
         if DUAL_STREAM_MODE:
@@ -271,11 +276,10 @@ def capture_frames():
         if new_tracker_type and new_tracker_type != TRACKER_TYPE:
             TRACKER_TYPE = new_tracker_type
             tracker = None
-            tracker_start_time = None  # ADDED
-            last_position = None       # ADDED
+            tracker_start_time = None
+            last_position = None
             new_tracker_type = None
 
-        current_time = time.time()
         if current_mode == SystemMode.COOL_DOWN and current_time >= cooldown_until:
             current_mode = SystemMode.DETECTING
             if hasattr(init_tracker, 'avg'):
@@ -301,16 +305,16 @@ def capture_frames():
                     direction = "N/A"
                     continue
 
-                # Update position & motion
+                # Detect crossing the line
                 if last_position:
                     prev_x = last_position[0]
                     if prev_x < LINE_X * FRAME_SCALING and center_x >= LINE_X * FRAME_SCALING:
                         direction = "RIGHT"
-                        alert_active = True
+                        last_crossing_time = current_time
                         print(f">>> Object crossed line from LEFT to RIGHT")
                     elif prev_x > LINE_X * FRAME_SCALING and center_x <= LINE_X * FRAME_SCALING:
                         direction = "LEFT"
-                        alert_active = True
+                        last_crossing_time = current_time
                         print(f">>> Object crossed line from RIGHT to LEFT")
                     else:
                         direction = "N/A"
@@ -330,8 +334,10 @@ def capture_frames():
 
             else:
                 # Tracking failed
+                # Should we stay in TRACKING mode for a while?
+                # If the object is not detected for a while, switch to COOL_DOWN mode
                 current_mode = SystemMode.DETECTING
-                print(">>> Tracking failed! Switching to TRACKING mode")
+                print(">>> Tracking failed! Switching to DETECTING mode")
                 tracker = None
                 tracker_start_time = None
                 last_position = None
@@ -364,44 +370,54 @@ def capture_frames():
                         current_mode = SystemMode.DETECTING
                     break
 
-        # Frame beautification
+        # Flash on detection
+        if last_crossing_time and abs(last_crossing_time - current_time) < CROSSING_FLASH_TIME:
+            alpha = 1.0 - (abs(last_crossing_time - current_time) / CROSSING_FLASH_TIME)
+            overlay = np.full_like(frame, 255)  # White overlay
+            cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
+
+        # Lines
         cv2.line(frame, (0, MIN_Y), (FRAME_WIDTH, MIN_Y), (0, 0, 255), 2)
         cv2.line(frame, (0, MAX_Y), (FRAME_WIDTH, MAX_Y), (0, 0, 255), 2)
         cv2.line(frame, (LINE_X, 0), (LINE_X, FRAME_HEIGHT), (0, 255, 0), 2)
 
+        # Bounding box
         if tracker and last_position:
             cv2.rectangle(frame, (int(x/FRAME_SCALING), int(y/FRAME_SCALING)), (int(x/FRAME_SCALING + w/FRAME_SCALING), int(y/FRAME_SCALING + h/FRAME_SCALING)), (0, 255, 0), 2)
             cv2.putText(frame, "Movida", (int(x/FRAME_SCALING), int(y/FRAME_SCALING) - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
-        if alert_active:
-            cv2.putText(frame, "CROSSING DETECTED", (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-            alert_active = False
-
-        # FPS monitoring
-        if current_mode == SystemMode.COOL_DOWN:
-            color = (255, 0, 0)
-        elif current_mode == SystemMode.DETECTING:
-            color = (0, 255, 255)
-        elif current_mode == SystemMode.TRACKING:
-            color = (0, 255, 0)
+        # Time and FPS calculation
         curr_frame_time = time.time()
-        curr_frame_lapse = curr_frame_time - prev_frame_time
-        fps = 1.0 / (curr_frame_lapse)
-        cv2.putText(frame, f"FPS: {fps:.2f}", (10, 50),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, color, 2)
-
+        frame_duration = curr_frame_time - prev_frame_time
+        fps = 1.0 / frame_duration if frame_duration > 0 else 0.0
         prev_frame_time = curr_frame_time
+
+        # Stats accumulation
         fps_temp_counter += 1
-        if curr_frame_lapse > fps_temp_slowest_frame:
-            fps_temp_slowest_frame = curr_frame_lapse
-        if curr_frame_time - fps_temp_start >= MONITORING_INTERVAL:
-            fps_global_string = f"avg - {fps_temp_counter/MONITORING_INTERVAL:.1f}; slowest - {1.0/fps_temp_slowest_frame:.1f}"
+        fps_temp_slowest_frame = max(fps_temp_slowest_frame, frame_duration)
+
+        # Periodic monitoring output
+        elapsed_monitoring = curr_frame_time - fps_temp_start
+        if elapsed_monitoring > 0:
+            avg_fps = fps_temp_counter / elapsed_monitoring
+            min_fps = 1.0 / fps_temp_slowest_frame if fps_temp_slowest_frame > 0 else 0.0
+            fps_string = f"FPS (last/avg/min): {fps:.1f} / {avg_fps:.1f} / {min_fps:.1f}"
+        else:
+            fps_string = f"FPS: {fps:.1f}"
+
+        # Print and reset after interval
+        if elapsed_monitoring >= MONITORING_INTERVAL:
+            fps_global_string = fps_string
             print(fps_global_string)
             fps_temp_counter = 0
             fps_temp_slowest_frame = 0
             fps_temp_start = curr_frame_time
+
+        # Display FPS on the frame
+        color = mode_colors.get(current_mode, (255, 255, 255))
+        cv2.putText(frame, f"{fps_string}", (10, 50),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, color, 2)
 
 #       Theoritecally correct, but slower        
 #        try:
@@ -412,7 +428,7 @@ def capture_frames():
             prev_streamed_time = curr_frame_time
             frame_queue.put_nowait(frame.copy())
 
-        time.sleep(0.005)  # gentle with other threads
+        time.sleep(0.001)   # Avoid suffocating the CPU
 
 
 # === Flask Routes ===
