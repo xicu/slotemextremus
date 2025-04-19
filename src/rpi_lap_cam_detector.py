@@ -14,7 +14,7 @@ app = Flask(__name__)
 FRAME_WIDTH = 1280  # Capture width, native being 1536 for a pi cam 3
 FRAME_HEIGHT = 720  # Capture height, native being 864 for a pi cam 3
 FRAME_SCALING = 0.5 # Scaling ratio for processing efficiency
-FRAME_FPS = 120
+FRAME_FPS = 60
 DUAL_STREAM_MODE = False
 
 LINE_X = FRAME_WIDTH // 2
