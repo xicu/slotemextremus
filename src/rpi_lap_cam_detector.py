@@ -39,9 +39,9 @@ new_tracker_type = None
 recalibrate_flag = False
 
 alert_active = False
-cooldown = 0
+COOL_DOWN_TIME = 1.0
+TRACKING_TIME = 6.0
 tracker = None
-crossing_history = []
 direction = "N/A"
 fps_global_string = "Calculating..."
 MONITORING_INTERVAL = 2.0 # seconds
@@ -53,7 +53,6 @@ last_status_result = {}
 # Tracker timing & movement
 tracker_start_time = None  # ADDED
 last_position = None       # ADDED
-has_crossed_line = False   # ADDED
 
 # === Flask HTML Template ===
 HTML_PAGE = """
@@ -225,15 +224,16 @@ else:
 picam2.configure(config)
 picam2.start()
 
-current_mode = SystemMode.DETECTING
+current_mode = SystemMode.COOL_DOWN
+cooldown_until = 0
 
 def capture_frames():
-    global output_frame, tracker, cooldown, alert_active
-    global crossing_history, reset_tracker_flag, recalibrate_flag
+    global output_frame, tracker, alert_active
+    global reset_tracker_flag, recalibrate_flag
     global direction, new_tracker_type, TRACKER_TYPE, LINE_X
-    global tracker_start_time, last_position, has_crossed_line
+    global tracker_start_time, last_position
     global fps_global_string
-    global current_mode
+    global current_mode, cooldown_until
 
     prev_frame_time = time.time()
     prev_streamed_time = time.time()
@@ -241,7 +241,10 @@ def capture_frames():
     fps_temp_counter = 0
     fps_temp_start = time.time()
     fps_temp_slowest_frame = 1
-    
+
+    print(">>> Starting frame capture in COOL_DOWN mode")
+    cooldown_until = time.time() + COOL_DOWN_TIME
+
     while True:
         frame = picam2.capture_array("main")
 
@@ -256,10 +259,8 @@ def capture_frames():
 
         if reset_tracker_flag:
             tracker = None
-            crossing_history.clear()
             tracker_start_time = None
             last_position = None
-            has_crossed_line = False
             reset_tracker_flag = False
 
         if recalibrate_flag:
@@ -270,64 +271,73 @@ def capture_frames():
         if new_tracker_type and new_tracker_type != TRACKER_TYPE:
             TRACKER_TYPE = new_tracker_type
             tracker = None
-            crossing_history.clear()
             tracker_start_time = None  # ADDED
             last_position = None       # ADDED
-            has_crossed_line = False   # ADDED
             new_tracker_type = None
 
-        if cooldown > 0:
-            cooldown -= 1
+        current_time = time.time()
+        if current_mode == SystemMode.COOL_DOWN and current_time >= cooldown_until:
+            current_mode = SystemMode.DETECTING
+            if hasattr(init_tracker, 'avg'):
+                del init_tracker.avg    # Recalibrating after every cool down
+            print(">>> COOL_DOWN finished, switching to DETECTING mode")
 
-        # Tracking mode
-        success = False
-        if tracker:
+        if current_mode == SystemMode.TRACKING:
             success, bbox = tracker.update(gray)
             if success:
                 x, y, w, h = [int(v) for v in bbox]
                 center_x = x + w // 2
                 center_y = y + h // 2
 
+                # Check if object has left the visible frame
+                frame_height, frame_width = gray.shape[:2]
+                if not (0 <= center_x < frame_width and 0 <= center_y < frame_height):
+                    print(">>> Object left the frame! Switching to COOL_DOWN mode")
+                    current_mode = SystemMode.COOL_DOWN
+                    cooldown_until = current_time + COOL_DOWN_TIME
+                    tracker = None
+                    tracker_start_time = None
+                    last_position = None
+                    direction = "N/A"
+                    continue
+
+                # Update position & motion
                 if last_position:
-                    dx = abs(center_x - last_position[0])
-                    dy = abs(center_y - last_position[1])
-                    moved = dx > 10 or dy > 10
-                else:
-                    moved = False
+                    prev_x = last_position[0]
+                    if prev_x < LINE_X * FRAME_SCALING and center_x >= LINE_X * FRAME_SCALING:
+                        direction = "RIGHT"
+                        alert_active = True
+                        print(f">>> Object crossed line from LEFT to RIGHT")
+                    elif prev_x > LINE_X * FRAME_SCALING and center_x <= LINE_X * FRAME_SCALING:
+                        direction = "LEFT"
+                        alert_active = True
+                        print(f">>> Object crossed line from RIGHT to LEFT")
+                    else:
+                        direction = "N/A"
+
+                # Check if the tracker has been active for too long
+                if tracker_start_time and current_time - tracker_start_time > TRACKING_TIME:
+                    current_mode = SystemMode.COOL_DOWN
+                    print(">>> Tracker timeout! Switching to COOL_DOWN mode")
+                    cooldown_until = current_time + COOL_DOWN_TIME
+                    tracker = None
+                    tracker_start_time = None
+                    last_position = None
+                    direction = "N/A"
+                    continue
 
                 last_position = (center_x, center_y)
 
-                left_cross = x <= LINE_X*FRAME_SCALING <= x + w
-                right_cross = (x + w) >= LINE_X*FRAME_SCALING >= x
-                direction = "RIGHT" if center_x > LINE_X*FRAME_SCALING else "LEFT"
-
-                if (left_cross or right_cross) and cooldown == 0:
-                    has_crossed_line = True
-                    crossing_history.append(direction)
-                    if len(crossing_history) > 5:
-                        crossing_history.pop(0)
-                    if len(set(crossing_history)) == 1:
-                        alert_active = True
-                        cooldown = COOLDOWN_FRAMES
-
-                if tracker_start_time and time.time() - tracker_start_time > 5:
-                    if True: # not moved and not has_crossed_line:
-                        tracker = None
-                        tracker_start_time = None
-                        last_position = None
-                        has_crossed_line = False
-                        direction = "N/A"
-                        continue
             else:
-                # Reset the tracker if the object leaves the frame
+                # Tracking failed
+                current_mode = SystemMode.DETECTING
+                print(">>> Tracking failed! Switching to TRACKING mode")
                 tracker = None
                 tracker_start_time = None
                 last_position = None
-                has_crossed_line = False
                 direction = "N/A"
-        
-        # Detecting mode
-        elif current_mode != SystemMode.COOL_DOWN:
+
+        elif current_mode == SystemMode.DETECTING:
             blur = cv2.GaussianBlur(gray, (21, 21), 0)
             if not hasattr(init_tracker, 'avg'):
                 init_tracker.avg = blur.copy().astype("float")
@@ -336,15 +346,22 @@ def capture_frames():
             thresh = cv2.threshold(frame_delta, 15, 255, cv2.THRESH_BINARY)[1]
             thresh = cv2.dilate(thresh, None, iterations=2)
             contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
             for c in contours:
-                if cv2.contourArea(c) > (MIN_COUNTOUR_AREA*FRAME_SCALING*FRAME_SCALING):
+                if cv2.contourArea(c) > (MIN_COUNTOUR_AREA * FRAME_SCALING * FRAME_SCALING):
                     (x, y, w, h) = cv2.boundingRect(c)
-                    if y < MIN_Y*FRAME_SCALING or y + h > MAX_Y*FRAME_SCALING:
+                    if y < MIN_Y * FRAME_SCALING or y + h > MAX_Y * FRAME_SCALING:
                         continue
-                    tracker = init_tracker(gray, (x, y, w, h))
-                    tracker_start_time = time.time()  # ADDED
-                    last_position = None              # ADDED
-                    has_crossed_line = False          # ADDED
+                    # Try to initialize tracker
+                    try:
+                        tracker = init_tracker(gray, (x, y, w, h))
+                        tracker_start_time = current_time
+                        last_position = None
+                        current_mode = SystemMode.TRACKING
+                        print(">>> Starting tracking...")
+                    except Exception as e:
+                        print(f">>> Tracker init failed: {e}. Staying in DETECTING mode.")
+                        current_mode = SystemMode.DETECTING
                     break
 
         # Frame beautification
@@ -352,7 +369,7 @@ def capture_frames():
         cv2.line(frame, (0, MAX_Y), (FRAME_WIDTH, MAX_Y), (0, 0, 255), 2)
         cv2.line(frame, (LINE_X, 0), (LINE_X, FRAME_HEIGHT), (0, 255, 0), 2)
 
-        if tracker and success:
+        if tracker and last_position:
             cv2.rectangle(frame, (int(x/FRAME_SCALING), int(y/FRAME_SCALING)), (int(x/FRAME_SCALING + w/FRAME_SCALING), int(y/FRAME_SCALING + h/FRAME_SCALING)), (0, 255, 0), 2)
             cv2.putText(frame, "Movida", (int(x/FRAME_SCALING), int(y/FRAME_SCALING) - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
@@ -362,12 +379,19 @@ def capture_frames():
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
             alert_active = False
 
-        # FPS monitoring        
+        # FPS monitoring
+        if current_mode == SystemMode.COOL_DOWN:
+            color = (255, 0, 0)
+        elif current_mode == SystemMode.DETECTING:
+            color = (0, 255, 255)
+        elif current_mode == SystemMode.TRACKING:
+            color = (0, 255, 0)
         curr_frame_time = time.time()
         curr_frame_lapse = curr_frame_time - prev_frame_time
         fps = 1.0 / (curr_frame_lapse)
         cv2.putText(frame, f"FPS: {fps:.2f}", (10, 50),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, color, 2)
+
         prev_frame_time = curr_frame_time
         fps_temp_counter += 1
         if curr_frame_lapse > fps_temp_slowest_frame:
