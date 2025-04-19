@@ -7,6 +7,8 @@ from picamera2 import Picamera2
 import time
 import psutil
 import subprocess
+from enum import Enum, auto
+
 
 app = Flask(__name__)
 
@@ -34,20 +36,21 @@ new_tracker_type = None
 recalibrate_flag = False
 
 last_crossing_time = None
+last_crossing_direction = "N/A"
 CROSSING_FLASH_TIME = 0.5
 COOL_DOWN_TIME = 1.0
 TRACKING_TIME = 6.0
+TRACKER_TYPE = None
 tracker = None
-direction = "N/A"
 fps_global_string = "Calculating..."
 MONITORING_INTERVAL = 2.5 # seconds
 
-TRACKER_TYPE = None
 last_status_time = 0
 last_status_result = {}
 
 # Tracker timing & movement
 tracker_start_time = None
+tracker_last_success_time = None
 last_position = None
 
 # === Flask HTML Template ===
@@ -121,8 +124,6 @@ function updateSystemInfo() {
 setInterval(updateSystemInfo, 3000);
 </script>
 """
-
-from enum import Enum, auto
 
 class SystemMode(Enum):
     DETECTING = auto()
@@ -231,7 +232,7 @@ cooldown_until = 0
 def capture_frames():
     global tracker, last_crossing_time
     global reset_tracker_flag, recalibrate_flag
-    global direction, new_tracker_type, TRACKER_TYPE, LINE_X
+    global last_crossing_direction, new_tracker_type, TRACKER_TYPE, LINE_X
     global tracker_start_time, last_position
     global fps_global_string
     global current_mode, cooldown_until
@@ -299,22 +300,22 @@ def capture_frames():
                     tracker = None
                     tracker_start_time = None
                     last_position = None
-                    direction = "N/A"
+                    last_crossing_direction = "N/A"
                     continue
 
                 # Detect crossing the line
                 if last_position:
                     prev_x = last_position[0]
                     if prev_x < LINE_X * FRAME_SCALING and center_x >= LINE_X * FRAME_SCALING:
-                        direction = "RIGHT"
+                        last_crossing_direction = "RIGHT"
                         last_crossing_time = current_time
                         print(f">>> Object crossed line from LEFT to RIGHT")
                     elif prev_x > LINE_X * FRAME_SCALING and center_x <= LINE_X * FRAME_SCALING:
-                        direction = "LEFT"
+                        last_crossing_direction = "LEFT"
                         last_crossing_time = current_time
                         print(f">>> Object crossed line from RIGHT to LEFT")
                     else:
-                        direction = "N/A"
+                        last_crossing_direction = "N/A"
 
                 # Check if the tracker has been active for too long
                 if tracker_start_time and current_time - tracker_start_time > TRACKING_TIME:
@@ -324,7 +325,7 @@ def capture_frames():
                     tracker = None
                     tracker_start_time = None
                     last_position = None
-                    direction = "N/A"
+                    last_crossing_direction = "N/A"
                     continue
 
                 last_position = (center_x, center_y)
@@ -338,7 +339,7 @@ def capture_frames():
                 tracker = None
                 tracker_start_time = None
                 last_position = None
-                direction = "N/A"
+                last_crossing_direction = "N/A"
 
         elif current_mode == SystemMode.DETECTING:
             blur = cv2.GaussianBlur(gray, (21, 21), 0)
