@@ -19,10 +19,10 @@ FRAME_SCALING = 0.5 # Scaling ratio for processing efficiency
 FRAME_FPS = 60
 DUAL_STREAM_MODE = False
 
-LINE_X = FRAME_WIDTH // 2
-MIN_Y = 0
-MAX_Y = FRAME_HEIGHT
-MIN_COUNTOUR_AREA = 500  # Minimum area of contour to consider for tracking
+LINE_X = FRAME_WIDTH // 2   # X position of the detection line, in pixels
+MIN_Y = 0.25                # Minimum Y position of the detection line, in percentage
+MAX_Y = 0.80                # Maximum Y position of the detection line, in percentage
+MIN_COUNTOUR_AREA = 500     # Minimum area of contour to consider for tracking
 
 # === Streaming quality ===
 STREAM_QUALITY = 35
@@ -31,7 +31,7 @@ STREAM_SCALING = 1
 streaming_frame_queue = queue.Queue(maxsize=2)  # smoother than a lock
 
 # === Globals ===
-reset_tracker_flag = False
+trigger_cooldown = False
 new_tracker_type = None
 recalibrate_flag = False
 
@@ -53,7 +53,7 @@ last_status_result = {}
 # Tracker timing & movement
 tracker_start_time = None
 tracker_last_success_time = None
-last_position = None
+last_position_in_subframe_coordinates = None
 
 # === Flask HTML Template ===
 HTML_PAGE = """
@@ -66,7 +66,7 @@ HTML_PAGE = """
 </div>
 
 <div style="display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 20px;">
-  <button onclick="fetch('/reset_tracker')">Reset Tracker</button>
+  <button onclick="fetch('/trigger_cooldown')">Cooldown</button>
   <button onclick="fetch('/recalibrate')">Recalibrate Background</button>
   <button onclick="fetch('/reset_autofocus')">Reset Autofocus</button>
 </div>
@@ -89,18 +89,18 @@ HTML_PAGE = """
     <input type="range" id="lineSlider" min="0" max="{{ width }}" value="{{ line_x }}" oninput="updateLine(this.value)" />
 
     <br><br>
-    <label for="minYSlider">Minimum Y: <span id="minYValue">{{ min_y }}</span></label><br>
-    <input type="range" id="minYSlider" min="0" max="{{ height }}" value="{{ min_y }}" oninput="updateMinY(this.value)" />
+    <label for="minYSlider">Minimum Y: <span id="minYValue">{{ min_y }}</span>%</label><br>
+    <input type="range" id="minYSlider" min="0" max="100" value="{{ min_y }}" oninput="updateMinY(this.value)" />
 
     <br><br>
-    <label for="maxYSlider">Maximum Y: <span id="maxYValue">{{ max_y }}</span></label><br>
-    <input type="range" id="maxYSlider" min="0" max="{{ height }}" value="{{ max_y }}" oninput="updateMaxY(this.value)" />
+    <label for="maxYSlider">Maximum Y: <span id="maxYValue">{{ max_y }}</span>%</label><br>
+    <input type="range" id="maxYSlider" min="0" max="100" value="{{ max_y }}" oninput="updateMaxY(this.value)" />
   </div>
 
   <!-- System Status Panel -->
   <div style="flex: 1; min-width: 300px;">
     <h2>System Status</h2>
-    <p><strong>FPS:</strong> <span id="fpsSummary">Calculating...</span></p>
+    <p><strong>Performance:</strong> <span id="fpsSummary">Calculating...</span></p>
     <p><strong>CPU Usage:</strong> <span id="cpuUsage">Calculating...</span></p>
     <p><strong>CPU Temperature:</strong> <span id="cpuTemp">N/A</span></p>
     <p><strong>CPU Frequency:</strong> <span id="cpuFreq">0</span></p>
@@ -248,9 +248,9 @@ cooldown_until = 0
 
 def capture_frames():
     global tracker, last_crossing_time
-    global reset_tracker_flag, recalibrate_flag
+    global trigger_cooldown, recalibrate_flag
     global last_crossing_direction, new_tracker_type, TRACKER_TYPE, LINE_X
-    global tracker_start_time, last_position, tracker_last_success_time
+    global tracker_start_time, last_position_in_subframe_coordinates, tracker_last_success_time
     global fps_global_string
     global current_mode, cooldown_until
 
@@ -262,7 +262,7 @@ def capture_frames():
     fps_temp_slowest_frame = 1
 
     print(">>> COOL_DOWN mode set to start")
-    cooldown_until = time.time() + COOL_DOWN_TIME
+    trigger_cooldown = True
 
     motion_history = []
 
@@ -273,20 +273,53 @@ def capture_frames():
         if DUAL_STREAM_MODE:
             current_frame_resized = picam2.capture_array("lores")
             width, height = picam2.stream_configuration("lores")["size"]
-            current_frame_gray = current_frame_resized[:height, :width] # Efficient grayscale extraction from YUV402 to avoid color conversion
+
+            # Calculate cropping bounds in pixels
+            min_y_px = int(height * MIN_Y)
+            max_y_px = int(height * MAX_Y)
+
+            # Efficient grayscale extraction and vertical crop
+            current_frame_gray = current_frame_resized[min_y_px:max_y_px, :width]
+
         else:
-            # consider INTER_LINEAR
-            current_frame_resized = cv2.resize(current_frame, (int(current_frame.shape[1] * FRAME_SCALING), int(current_frame.shape[0] * FRAME_SCALING)), interpolation=cv2.INTER_AREA)
+            # Resize frame
+            current_frame_resized = cv2.resize(
+                current_frame,
+                (
+                    int(current_frame.shape[1] * FRAME_SCALING),
+                    int(current_frame.shape[0] * FRAME_SCALING)
+                ),
+                interpolation=cv2.INTER_LINEAR  # INTER_AREA gives more quality
+            )
+
+            # Convert to grayscale
             current_frame_gray = cv2.cvtColor(current_frame_resized, cv2.COLOR_BGR2GRAY)
 
-        if reset_tracker_flag:
-            tracker = None
-            motion_history.clear()
-            tracker_start_time = None
-            last_position = None
-            reset_tracker_flag = False
+            # Get new height after resize
+            height = current_frame_gray.shape[0]
 
-        if recalibrate_flag:
+            # Calculate cropping bounds in pixels
+            min_y_px = int(height * MIN_Y)
+            max_y_px = int(height * MAX_Y)
+
+            # Crop vertically
+            current_frame_gray = current_frame_gray[min_y_px:max_y_px, :]
+
+
+        if trigger_cooldown:
+            motion_history.clear()
+            last_position_in_subframe_coordinates = None
+            current_mode = SystemMode.COOL_DOWN
+            cooldown_until = current_frame_time + COOL_DOWN_TIME
+            tracker = None
+            tracker_start_time = None
+            last_position_in_subframe_coordinates = None
+            last_crossing_direction = "N/A"
+            if hasattr(init_tracker, 'avg'):
+                del init_tracker.avg
+            trigger_cooldown = False
+
+        if recalibrate_flag:        ### NOT NEEDED - KEPT AS PLACEHOLDER FOR ANOTHER BUTTON
             if hasattr(init_tracker, 'avg'):
                 del init_tracker.avg
             motion_history.clear()
@@ -296,14 +329,13 @@ def capture_frames():
             TRACKER_TYPE = new_tracker_type
             tracker = None
             tracker_start_time = None
-            last_position = None
+            last_position_in_subframe_coordinates = None
             new_tracker_type = None
 
         if current_mode == SystemMode.COOL_DOWN and current_frame_time >= cooldown_until:
             current_mode = SystemMode.DETECTING
-            if hasattr(init_tracker, 'avg'):
-                del init_tracker.avg    # Recalibrating after every cool down
-            motion_history.clear()
+#            if hasattr(init_tracker, 'avg'):
+#                del init_tracker.avg    # Recalibrating after every cool down
             print(">>> DETECTING mode after COOL_DOWN finished")
 
 
@@ -322,17 +354,12 @@ def capture_frames():
                 frame_height, frame_width = current_frame_gray.shape[:2]
                 if not (0 <= center_x < frame_width and 0 <= center_y < frame_height):
                     print(">>> COOL_DOWN mode after object left the frame")
-                    current_mode = SystemMode.COOL_DOWN
-                    cooldown_until = current_frame_time + COOL_DOWN_TIME
-                    tracker = None
-                    tracker_start_time = None
-                    last_position = None
-                    last_crossing_direction = "N/A"
+                    trigger_cooldown = True
                     continue
 
                 # Detect crossing the line
-                if last_position:
-                    prev_x = last_position[0]
+                if last_position_in_subframe_coordinates:
+                    prev_x = last_position_in_subframe_coordinates[0]
                     if prev_x < LINE_X * FRAME_SCALING and center_x >= LINE_X * FRAME_SCALING:
                         last_crossing_direction = "RIGHT"
                         last_crossing_time = current_frame_time
@@ -348,14 +375,10 @@ def capture_frames():
                 if tracker_start_time and current_frame_time - tracker_start_time > TRACKING_TIMEOUT:
                     current_mode = SystemMode.COOL_DOWN
                     print(">>> COOL_DOWN mode after tracker timeout")
-                    cooldown_until = current_frame_time + COOL_DOWN_TIME
-                    tracker = None
-                    tracker_start_time = None
-                    last_position = None
-                    last_crossing_direction = "N/A"
+                    trigger_cooldown = True
                     continue
 
-                last_position = (center_x, center_y)
+                last_position_in_subframe_coordinates = (center_x, center_y)
                 tracker_last_success_time = current_frame_time
 
             else:
@@ -365,7 +388,7 @@ def capture_frames():
                     print(">>> DETECTING mode after tracking resilience limit exceeded")
                     tracker = None
                     tracker_start_time = None
-                    last_position = None
+                    last_position_in_subframe_coordinates = None
                     last_crossing_direction = "N/A"
 
 
@@ -389,8 +412,6 @@ def capture_frames():
                 motion_history.append(thresh.copy())
                 if len(motion_history) > MOTION_HISTORY_LENGTH:
                     motion_history.pop(0)
-#                elif len(motion_history) < MOTION_HISTORY_LENGTH:
-#                    continue
                 # Combine all motion masks
                 motion = np.bitwise_or.reduce(motion_history)
             else:
@@ -420,14 +441,14 @@ def capture_frames():
 #                w = min(w + 2 * pad_x, current_frame_gray.shape[1] - x)
 #                h = min(h + 2 * pad_y, current_frame_gray.shape[0] - y)
 
-                if y < MIN_Y * FRAME_SCALING or y + h > MAX_Y * FRAME_SCALING:
+                if False: #y < MIN_Y * FRAME_SCALING or y + h > MAX_Y * FRAME_SCALING:
                     pass  # outside Y range
                 else:
                     try:
                         tracker = init_tracker(current_frame_gray, (x, y, w, h))
                         tracker_start_time = current_frame_time
                         tracker_last_success_time = current_frame_time
-                        last_position = None
+                        last_position_in_subframe_coordinates = None
                         current_mode = SystemMode.TRACKING
                         print(">>> TRACKING mode after largest averaged contour found")
                     except Exception as e:
@@ -445,14 +466,18 @@ def capture_frames():
             cv2.addWeighted(overlay, alpha, current_frame, 1 - alpha, 0, current_frame)
 
         # Lines
-        cv2.line(current_frame, (0, MIN_Y), (FRAME_WIDTH, MIN_Y), (0, 0, 255), 2)
-        cv2.line(current_frame, (0, MAX_Y), (FRAME_WIDTH, MAX_Y), (0, 0, 255), 2)
-        cv2.line(current_frame, (LINE_X, 0), (LINE_X, FRAME_HEIGHT), (0, 255, 0), 2)
+        cv2.line(current_frame, (0, int(FRAME_HEIGHT*MIN_Y)), (FRAME_WIDTH, int(FRAME_HEIGHT*MIN_Y)), (0, 0, 255), 2)
+        cv2.line(current_frame, (0, int(FRAME_HEIGHT*MAX_Y)), (FRAME_WIDTH, int(FRAME_HEIGHT*MAX_Y)), (0, 0, 255), 2)
+        cv2.line(current_frame, (LINE_X, int(FRAME_HEIGHT*MIN_Y)), (LINE_X, int(FRAME_HEIGHT*MAX_Y)), (0, 255, 0), 2)
 
         # Bounding box
-        if tracker and last_position:
-            cv2.rectangle(current_frame, (int(x/FRAME_SCALING), int(y/FRAME_SCALING)), (int(x/FRAME_SCALING + w/FRAME_SCALING), int(y/FRAME_SCALING + h/FRAME_SCALING)), (0, 255, 0), 2)
-            cv2.putText(current_frame, "Movida", (int(x/FRAME_SCALING), int(y/FRAME_SCALING) - 10),
+        if tracker and last_position_in_subframe_coordinates:
+            x_full_frame = int(x/FRAME_SCALING)
+            y_full_frame = int((y+min_y_px)/FRAME_SCALING)
+            w_full_frame = int(w/FRAME_SCALING)
+            h_full_frame = int(h/FRAME_SCALING)
+            cv2.rectangle(current_frame, (x_full_frame, y_full_frame), (x_full_frame + w_full_frame, y_full_frame + h_full_frame), (0, 255, 0), 2)
+            cv2.putText(current_frame, "Movida", (x_full_frame, y_full_frame - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
         # Time and FPS calculation
@@ -561,8 +586,8 @@ def index():
         trackers=AVAILABLE_TRACKERS.keys(),
         current_tracker=TRACKER_TYPE,
         line_x=LINE_X,
-        min_y=MIN_Y,
-        max_y=MAX_Y,
+        min_y=int(MIN_Y*100),
+        max_y=int(MAX_Y*100),
         width=int(FRAME_WIDTH*STREAM_SCALING),
         height=int(FRAME_HEIGHT*STREAM_SCALING),
         cpu_usage="Calculating...",
@@ -578,11 +603,11 @@ def video_feed():
     return Response(generate_stream(),
                     mimetype='multipart/x-mixed-replace; boundary=frame')
 
-@app.route('/reset_tracker')
-def reset_tracker():
-    global reset_tracker_flag
-    reset_tracker_flag = True
-    return "Tracker reset", 200
+@app.route('/trigger_cooldown')
+def trigger_cooldown():
+    global trigger_cooldown
+    trigger_cooldown = True
+    return "Cool down triggered", 200
 
 @app.route('/set_tracker')
 def set_tracker():
@@ -611,17 +636,29 @@ def set_line():
 @app.route('/set_min_y')
 def set_min_y():
     global MIN_Y
+    global MAX_Y
+    global trigger_cooldown
     try:
-        MIN_Y = int(request.args.get('y'))
+        y = float(request.args.get('y'))/100.0
+        if y >= MAX_Y:
+            return "Min Y must be less than Max Y", 400
+        MIN_Y = y
+        trigger_cooldown = True
         return f"Min Y set to {MIN_Y}", 200
     except:
         return "Invalid value", 400
 
 @app.route('/set_max_y')
 def set_max_y():
+    global MIN_Y
     global MAX_Y
+    global trigger_cooldown
     try:
-        MAX_Y = int(request.args.get('y'))
+        y = float(request.args.get('y'))/100.0
+        if y <= MIN_Y:
+            return "Max Y must be less than Min Y", 400
+        MAX_Y = y
+        trigger_cooldown = True
         return f"Max Y set to {MAX_Y}", 200
     except:
         return "Invalid value", 400
