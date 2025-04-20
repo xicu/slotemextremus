@@ -215,6 +215,40 @@ def reset_autofocus():
     except Exception as e:
         print(f"Error resetting autofocus: {e}")
 
+# True if box_a contains box_b, False otherwise
+def bbox_contains(box_a, box_b):
+    if box_a is None:
+        return False
+
+    if box_b is None:
+        return True
+
+    ax, ay, aw, ah = box_a
+    bx, by, bw, bh = box_b
+
+    # Bottom-right corners
+    ax2, ay2 = ax + aw, ay + ah
+    bx2, by2 = by + bh, by + bh
+
+    # Check if all corners of B are within A
+    return (bx >= ax and by >= ay and
+            bx + bw <= ax2 and
+            by + bh <= ay2)
+
+def bbox_intersects(box_a, box_b):
+    if box_a is None or box_b is None:
+        return False
+    
+    ax, ay, aw, ah = box_a
+    bx, by, bw, bh = box_b
+
+    # Bottom-right corners
+    ax2, ay2 = ax + aw, ay + ah
+    bx2, by2 = bx + bw, by + bh
+
+    # Check if there's an overlap
+    return not (ax2 < bx or bx2 < ax or ay2 < by or by2 < ay)
+
 # === Camera Setup ===
 picam2 = Picamera2()
 print(picam2.sensor_modes)
@@ -361,6 +395,7 @@ def capture_frames():
                     continue
 
                 # Detect crossing the line
+# NEEDS REFINEMENT
                 if last_position_in_subframe_coordinates:
                     prev_x = last_position_in_subframe_coordinates[0]
                     if prev_x < LINE_X * FRAME_SCALING and center_x >= LINE_X * FRAME_SCALING:
@@ -398,7 +433,9 @@ def capture_frames():
         # DETECTION
         #
 
+#        if current_mode == SystemMode.DETECTING or current_mode == SystemMode.TRACKING:
         elif current_mode == SystemMode.DETECTING:
+#           Should we use the aggregation instead?????
             blur = cv2.GaussianBlur(current_subframe_gray, (21, 21), 0)
 
             if not hasattr(init_tracker, 'avg'):
@@ -433,17 +470,11 @@ def capture_frames():
                     max_area = area
 
             if largest_contour is not None:
-                last_position_in_subframe_coordinates = cv2.boundingRect(largest_contour)
-
-                # Optional: expand the box a bit
-#                pad_x = int(w * 0.3)
-#                pad_y = int(h * 0.2)
-#                x = max(x - pad_x, 0)
-#                y = max(y - pad_y, 0)
-#                w = min(w + 2 * pad_x, current_frame_gray.shape[1] - x)
-#                h = min(h + 2 * pad_y, current_frame_gray.shape[0] - y)
-
+#            if largest_contour is not None and bbox_contains(cv2.boundingRect(largest_contour), last_position_in_subframe_coordinates):
+# BREAKS IF LAST_POSITION IS NONE
+#            if largest_contour is not None and max_area > (last_position_in_subframe_coordinates[2] * last_position_in_subframe_coordinates[3]):
                 try:
+                    last_position_in_subframe_coordinates = cv2.boundingRect(largest_contour)
                     tracker = init_tracker(current_subframe_gray, last_position_in_subframe_coordinates)
                     tracker_start_time = current_frame_time
                     tracker_last_success_time = current_frame_time
