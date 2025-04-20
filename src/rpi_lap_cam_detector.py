@@ -279,7 +279,7 @@ def capture_frames():
             max_y_px = int(height * MAX_Y)
 
             # Efficient grayscale extraction and vertical crop
-            current_frame_gray = current_frame_resized[min_y_px:max_y_px, :width]
+            current_subframe_gray = current_frame_resized[min_y_px:max_y_px, :width]
 
         else:
             # Resize frame
@@ -293,17 +293,17 @@ def capture_frames():
             )
 
             # Convert to grayscale
-            current_frame_gray = cv2.cvtColor(current_frame_resized, cv2.COLOR_BGR2GRAY)
+            current_subframe_gray = cv2.cvtColor(current_frame_resized, cv2.COLOR_BGR2GRAY)
 
             # Get new height after resize
-            height = current_frame_gray.shape[0]
+            height = current_subframe_gray.shape[0]
 
             # Calculate cropping bounds in pixels
             min_y_px = int(height * MIN_Y)
             max_y_px = int(height * MAX_Y)
 
             # Crop vertically
-            current_frame_gray = current_frame_gray[min_y_px:max_y_px, :]
+            current_subframe_gray = current_subframe_gray[min_y_px:max_y_px, :]
 
 
         #
@@ -346,14 +346,15 @@ def capture_frames():
         #
 
         if current_mode == SystemMode.TRACKING:
-            success, bbox = tracker.update(current_frame_gray)
+            success, bbox = tracker.update(current_subframe_gray)
             if success:
+                last_position_in_subframe_coordinates = bbox
                 x, y, w, h = [int(v) for v in bbox]
                 center_x = x + w // 2
                 center_y = y + h // 2
 
                 # Check if object has left the visible frame
-                frame_height, frame_width = current_frame_gray.shape[:2]
+                frame_height, frame_width = current_subframe_gray.shape[:2]
                 if not (0 <= center_x < frame_width and 0 <= center_y < frame_height):
                     print(">>> COOL_DOWN mode after object left the frame")
                     trigger_cooldown = True
@@ -380,7 +381,6 @@ def capture_frames():
                     trigger_cooldown = True
                     continue
 
-                last_position_in_subframe_coordinates = (center_x, center_y)
                 tracker_last_success_time = current_frame_time
 
             else:
@@ -399,7 +399,7 @@ def capture_frames():
         #
 
         elif current_mode == SystemMode.DETECTING:
-            blur = cv2.GaussianBlur(current_frame_gray, (21, 21), 0)
+            blur = cv2.GaussianBlur(current_subframe_gray, (21, 21), 0)
 
             if not hasattr(init_tracker, 'avg'):
                 init_tracker.avg = blur.copy().astype("float")
@@ -433,7 +433,7 @@ def capture_frames():
                     max_area = area
 
             if largest_contour is not None:
-                (x, y, w, h) = cv2.boundingRect(largest_contour)
+                last_position_in_subframe_coordinates = cv2.boundingRect(largest_contour)
 
                 # Optional: expand the box a bit
 #                pad_x = int(w * 0.3)
@@ -444,13 +444,13 @@ def capture_frames():
 #                h = min(h + 2 * pad_y, current_frame_gray.shape[0] - y)
 
                 try:
-                    tracker = init_tracker(current_frame_gray, (x, y, w, h))
+                    tracker = init_tracker(current_subframe_gray, last_position_in_subframe_coordinates)
                     tracker_start_time = current_frame_time
                     tracker_last_success_time = current_frame_time
-                    last_position_in_subframe_coordinates = None
                     current_mode = SystemMode.TRACKING
                     print(">>> TRACKING mode after largest averaged contour found")
                 except Exception as e:
+                    last_position_in_subframe_coordinates = None
                     print(f">>> Tracker init failed: {e}. Staying in DETECTING mode.")
 
 
@@ -471,10 +471,10 @@ def capture_frames():
 
         # Bounding box
         if tracker and last_position_in_subframe_coordinates:
-            x_full_frame = int(x/FRAME_SCALING)
-            y_full_frame = int((y+min_y_px)/FRAME_SCALING)
-            w_full_frame = int(w/FRAME_SCALING)
-            h_full_frame = int(h/FRAME_SCALING)
+            x_full_frame = int(last_position_in_subframe_coordinates[0]/FRAME_SCALING)
+            y_full_frame = int((last_position_in_subframe_coordinates[1]+min_y_px)/FRAME_SCALING)
+            w_full_frame = int(last_position_in_subframe_coordinates[2]/FRAME_SCALING)
+            h_full_frame = int(last_position_in_subframe_coordinates[3]/FRAME_SCALING)
             cv2.rectangle(current_frame, (x_full_frame, y_full_frame), (x_full_frame + w_full_frame, y_full_frame + h_full_frame), (0, 255, 0), 2)
             cv2.putText(current_frame, "Movida", (x_full_frame, y_full_frame - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
