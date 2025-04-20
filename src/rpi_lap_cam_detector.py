@@ -39,13 +39,13 @@ last_crossing_time = None
 last_crossing_direction = "N/A"
 MOTION_HISTORY_LENGTH = 11          # No history with <=1. CPU intensive. Reduces false positives. Keep it at around 1/6th of the FPS.
 CROSSING_FLASH_TIME = 0.5
-COOL_DOWN_TIME = 1.0
+COOL_DOWN_TIME = 1.0                # Seconds
 TRACKING_TIMEOUT = 6.0              # Max time in the same tracker
 TRACKING_RESILIENCE_LIMIT = 0.05    # Max time without tracking success before swtiching to DETECTING mode
 TRACKER_TYPE = None
 tracker = None
 fps_global_string = "Calculating..."
-MONITORING_INTERVAL = 2.5 # seconds
+MONITORING_INTERVAL = 2.5           # Seconds. Watch out for the CPU usage spike when changing this value.
 
 last_status_time = 0
 last_status_result = {}
@@ -61,7 +61,9 @@ HTML_PAGE = """
 <title>Slotem Extremus Rpi</title>
 <h1>Slotem Extremus Raspberry Pi detector</h1>
 
-<img src="{{ url_for('video_feed') }}" style="width: {{ width }}px;"><br><br>
+<div style="width: 100%; overflow: hidden;">
+  <img src="{{ url_for('video_feed') }}" style="max-width: 100%; height: auto;" />
+</div>
 
 <label for="trackerSelect">Tracker:</label>
 <select id="trackerSelect" onchange="setTracker(this.value)">
