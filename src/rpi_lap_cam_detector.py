@@ -37,10 +37,11 @@ recalibrate_flag = False
 
 last_crossing_time = None
 last_crossing_direction = "N/A"
+MOTION_HISTORY_LENGTH = 11          # No history with <=1. CPU intensive. Reduces false positives. Keep it at around 1/6th of the FPS.
 CROSSING_FLASH_TIME = 0.5
 COOL_DOWN_TIME = 1.0
 TRACKING_TIMEOUT = 6.0              # Max time in the same tracker
-TRACKING_RESILIENCE_LIMIT = 0.05    # Max time without tracking success
+TRACKING_RESILIENCE_LIMIT = 0.05    # Max time without tracking success before swtiching to DETECTING mode
 TRACKER_TYPE = None
 tracker = None
 fps_global_string = "Calculating..."
@@ -248,6 +249,8 @@ def capture_frames():
     print(">>> COOL_DOWN mode set to start")
     cooldown_until = time.time() + COOL_DOWN_TIME
 
+    motion_history = []
+
     while True:
         current_frame_time = time.time()
         current_frame = picam2.capture_array("main")
@@ -263,6 +266,7 @@ def capture_frames():
 
         if reset_tracker_flag:
             tracker = None
+            motion_history.clear()
             tracker_start_time = None
             last_position = None
             reset_tracker_flag = False
@@ -270,6 +274,7 @@ def capture_frames():
         if recalibrate_flag:
             if hasattr(init_tracker, 'avg'):
                 del init_tracker.avg
+            motion_history.clear()
             recalibrate_flag = False
 
         if new_tracker_type and new_tracker_type != TRACKER_TYPE:
@@ -283,7 +288,13 @@ def capture_frames():
             current_mode = SystemMode.DETECTING
             if hasattr(init_tracker, 'avg'):
                 del init_tracker.avg    # Recalibrating after every cool down
+            motion_history.clear()
             print(">>> DETECTING mode after COOL_DOWN finished")
+
+
+        #
+        # TRACKING
+        #
 
         if current_mode == SystemMode.TRACKING:
             success, bbox = tracker.update(current_frame_gray)
@@ -342,18 +353,40 @@ def capture_frames():
                     last_position = None
                     last_crossing_direction = "N/A"
 
+
+        #
+        # DETECTION
+        #
+
         elif current_mode == SystemMode.DETECTING:
             blur = cv2.GaussianBlur(current_frame_gray, (21, 21), 0)
+
             if not hasattr(init_tracker, 'avg'):
                 init_tracker.avg = blur.copy().astype("float")
+
             cv2.accumulateWeighted(blur, init_tracker.avg, 0.2)
             frame_delta = cv2.absdiff(blur, cv2.convertScaleAbs(init_tracker.avg))
             thresh = cv2.threshold(frame_delta, 15, 255, cv2.THRESH_BINARY)[1]
-            thresh = cv2.dilate(thresh, None, iterations=2)
-            contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+            # Motion detection
+            if MOTION_HISTORY_LENGTH > 1:
+                # Save motion frame to history, and don't do anything else if not enough frames
+                motion_history.append(thresh.copy())
+                if len(motion_history) > MOTION_HISTORY_LENGTH:
+                    motion_history.pop(0)
+                elif len(motion_history) < MOTION_HISTORY_LENGTH:
+                    continue
+                # Combine all motion masks
+                motion = np.bitwise_or.reduce(motion_history)    # NEW
+            else:
+                motion = cv2.dilate(thresh, None, iterations=2)
+
+            # Find contours on the  motion
+            contours, _ = cv2.findContours(motion, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
             largest_contour = None
             max_area = 0
+
             for c in contours:
                 area = cv2.contourArea(c)
                 if area > (MIN_COUNTOUR_AREA * FRAME_SCALING * FRAME_SCALING) and area > max_area:
@@ -362,16 +395,32 @@ def capture_frames():
 
             if largest_contour is not None:
                 (x, y, w, h) = cv2.boundingRect(largest_contour)
-                try:
-                    tracker = init_tracker(current_frame_gray, (x, y, w, h))
-                    tracker_start_time = current_frame_time
-                    tracker_last_success_time = current_frame_time
-                    last_position = None
-                    current_mode = SystemMode.TRACKING
-                    print(">>> TRACKING mode after largest contour found")
-                except Exception as e:
-                    print(f">>> Tracker init failed: {e}. Staying in DETECTING mode.")
-                #break
+
+                # Optional: expand the box a bit
+                pad_x = int(w * 0.3)
+                pad_y = int(h * 0.2)
+                x = max(x - pad_x, 0)
+                y = max(y - pad_y, 0)
+                w = min(w + 2 * pad_x, current_frame_gray.shape[1] - x)
+                h = min(h + 2 * pad_y, current_frame_gray.shape[0] - y)
+
+                if y < MIN_Y * FRAME_SCALING or y + h > MAX_Y * FRAME_SCALING:
+                    pass  # outside Y range
+                else:
+                    try:
+                        tracker = init_tracker(current_frame_gray, (x, y, w, h))
+                        tracker_start_time = current_frame_time
+                        tracker_last_success_time = current_frame_time
+                        last_position = None
+                        current_mode = SystemMode.TRACKING
+                        print(">>> TRACKING mode after largest averaged contour found")
+                    except Exception as e:
+                        print(f">>> Tracker init failed: {e}. Staying in DETECTING mode.")
+
+
+        #
+        # POST-PROCESSING
+        #
 
         # Flash on detection
         if last_crossing_time and abs(last_crossing_time - current_frame_time) < CROSSING_FLASH_TIME:
@@ -405,7 +454,7 @@ def capture_frames():
         if elapsed_monitoring > 0:
             avg_fps = fps_temp_counter / elapsed_monitoring
             min_fps = 1.0 / fps_temp_slowest_frame if fps_temp_slowest_frame > 0 else 0.0
-            fps_string = f"FPS (last/avg/min): {fps:.1f} / {avg_fps:.1f} / {min_fps:.1f}"
+            fps_string = f"FPS last/avg/min: {fps:.1f}/{avg_fps:.1f}/{min_fps:.1f}"
         else:
             fps_string = f"FPS: {fps:.1f}"
 
