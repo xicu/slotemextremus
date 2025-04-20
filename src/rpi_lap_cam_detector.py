@@ -65,37 +65,50 @@ HTML_PAGE = """
   <img src="{{ url_for('video_feed') }}" style="max-width: 100%; height: auto;" />
 </div>
 
-<label for="trackerSelect">Tracker:</label>
-<select id="trackerSelect" onchange="setTracker(this.value)">
-  {% for t in trackers %}
-    <option value="{{t}}" {% if t == current_tracker %}selected{% endif %}>{{t}}</option>
-  {% endfor %}
-</select>
+<div style="display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 20px;">
+  <button onclick="fetch('/reset_tracker')">Reset Tracker</button>
+  <button onclick="fetch('/recalibrate')">Recalibrate Background</button>
+  <button onclick="fetch('/reset_autofocus')">Reset Autofocus</button>
+</div>
 
-<br><br>
-<label for="lineSlider">Detection Line Position (X): <span id="lineValue">{{ line_x }}</span></label><br>
-<input type="range" id="lineSlider" min="0" max="{{ width }}" value="{{ line_x }}" oninput="updateLine(this.value)" />
+<div style="display: flex; gap: 40px; align-items: flex-start; flex-wrap: wrap;">
 
-<br><br>
-<label for="minYSlider">Minimum Y: <span id="minYValue">{{ min_y }}</span></label><br>
-<input type="range" id="minYSlider" min="0" max="{{ height }}" value="{{ min_y }}" oninput="updateMinY(this.value)" />
+  <!-- Detection Config Panel -->
+  <div style="flex: 1; min-width: 300px;">
+    <h2>Detection Config</h2>
 
-<br><br>
-<label for="maxYSlider">Maximum Y: <span id="maxYValue">{{ max_y }}</span></label><br>
-<input type="range" id="maxYSlider" min="0" max="{{ height }}" value="{{ max_y }}" oninput="updateMaxY(this.value)" />
+    <label for="trackerSelect">Tracker:</label>
+    <select id="trackerSelect" onchange="setTracker(this.value)">
+      {% for t in trackers %}
+      <option value="{{t}}" {% if t == current_tracker %}selected{% endif %}>{{t}}</option>
+      {% endfor %}
+    </select>
 
-<br><br>
-<button onclick="fetch('/reset_tracker')">Reset Tracker</button>
-<button onclick="fetch('/recalibrate')">Recalibrate Background</button>
-<button onclick="fetch('/reset_autofocus')">Reset Autofocus</button>
+    <br><br>
+    <label for="lineSlider">Detection Line Position (X): <span id="lineValue">{{ line_x }}</span></label><br>
+    <input type="range" id="lineSlider" min="0" max="{{ width }}" value="{{ line_x }}" oninput="updateLine(this.value)" />
 
-<h2>System Info:</h2>
-<p><strong>FPS:</strong> <span id="fpsSummary">Calculating...</span></p>
-<p><strong>CPU Usage:</strong> <span id="cpuUsage">Calculating...</span></p>
-<p><strong>CPU Temperature:</strong> <span id="cpuTemp">N/A</span></p>
-<p><strong>CPU Frequency:</strong> <span id="cpuFreq">0</span></p>
-<p><strong>Memory Usage:</strong> <span id="memUsage">0</span></p>
-<p><strong>Throttle Status:</strong> <span id="throttlingStatus">Checking...</span></p>
+    <br><br>
+    <label for="minYSlider">Minimum Y: <span id="minYValue">{{ min_y }}</span></label><br>
+    <input type="range" id="minYSlider" min="0" max="{{ height }}" value="{{ min_y }}" oninput="updateMinY(this.value)" />
+
+    <br><br>
+    <label for="maxYSlider">Maximum Y: <span id="maxYValue">{{ max_y }}</span></label><br>
+    <input type="range" id="maxYSlider" min="0" max="{{ height }}" value="{{ max_y }}" oninput="updateMaxY(this.value)" />
+  </div>
+
+  <!-- System Status Panel -->
+  <div style="flex: 1; min-width: 300px;">
+    <h2>System Status</h2>
+    <p><strong>FPS:</strong> <span id="fpsSummary">Calculating...</span></p>
+    <p><strong>CPU Usage:</strong> <span id="cpuUsage">Calculating...</span></p>
+    <p><strong>CPU Temperature:</strong> <span id="cpuTemp">N/A</span></p>
+    <p><strong>CPU Frequency:</strong> <span id="cpuFreq">0</span></p>
+    <p><strong>Memory Usage:</strong> <span id="memUsage">0</span></p>
+    <p><strong>Throttle Status:</strong> <span id="throttlingStatus">Checking...</span></p>
+  </div>
+
+</div>
 
 <script>
 function setTracker(value) {
@@ -376,19 +389,20 @@ def capture_frames():
                 motion_history.append(thresh.copy())
                 if len(motion_history) > MOTION_HISTORY_LENGTH:
                     motion_history.pop(0)
-                elif len(motion_history) < MOTION_HISTORY_LENGTH:
-                    continue
+#                elif len(motion_history) < MOTION_HISTORY_LENGTH:
+#                    continue
                 # Combine all motion masks
-                motion = np.bitwise_or.reduce(motion_history)    # NEW
+                motion = np.bitwise_or.reduce(motion_history)
             else:
                 motion = cv2.dilate(thresh, None, iterations=2)
 
-            # Find contours on the  motion
-            contours, _ = cv2.findContours(motion, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            # Find contours only when we're not waiting for the motion history to build up
+            contours = []
+            if not (MOTION_HISTORY_LENGTH > 1 and len(motion_history) < MOTION_HISTORY_LENGTH):
+                contours, _ = cv2.findContours(motion, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
             largest_contour = None
             max_area = 0
-
             for c in contours:
                 area = cv2.contourArea(c)
                 if area > (MIN_COUNTOUR_AREA * FRAME_SCALING * FRAME_SCALING) and area > max_area:
