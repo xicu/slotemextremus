@@ -16,7 +16,7 @@ app = Flask(__name__)
 FRAME_WIDTH = 1280  # Capture width, native being 1536 for a pi cam 3
 FRAME_HEIGHT = 720  # Capture height, native being 864 for a pi cam 3
 FRAME_SCALING = 0.5 # Scaling ratio for processing efficiency
-FRAME_FPS = 60
+FRAME_FPS = 60      # FPS target
 DUAL_STREAM_MODE = False
 
 LINE_X = FRAME_WIDTH // 2   # X position of the detection line, in pixels
@@ -147,7 +147,7 @@ class SystemMode(Enum):
     TRACKING = auto()
     COOL_DOWN = auto()
 mode_colors = {
-    SystemMode.COOL_DOWN: (255, 0, 0),
+    SystemMode.COOL_DOWN: (255, 255, 0),
     SystemMode.DETECTING: (0, 255, 255),
     SystemMode.TRACKING: (0, 255, 0),
 }
@@ -443,18 +443,15 @@ def capture_frames():
 #                w = min(w + 2 * pad_x, current_frame_gray.shape[1] - x)
 #                h = min(h + 2 * pad_y, current_frame_gray.shape[0] - y)
 
-                if False: #y < MIN_Y * FRAME_SCALING or y + h > MAX_Y * FRAME_SCALING:
-                    pass  # outside Y range
-                else:
-                    try:
-                        tracker = init_tracker(current_frame_gray, (x, y, w, h))
-                        tracker_start_time = current_frame_time
-                        tracker_last_success_time = current_frame_time
-                        last_position_in_subframe_coordinates = None
-                        current_mode = SystemMode.TRACKING
-                        print(">>> TRACKING mode after largest averaged contour found")
-                    except Exception as e:
-                        print(f">>> Tracker init failed: {e}. Staying in DETECTING mode.")
+                try:
+                    tracker = init_tracker(current_frame_gray, (x, y, w, h))
+                    tracker_start_time = current_frame_time
+                    tracker_last_success_time = current_frame_time
+                    last_position_in_subframe_coordinates = None
+                    current_mode = SystemMode.TRACKING
+                    print(">>> TRACKING mode after largest averaged contour found")
+                except Exception as e:
+                    print(f">>> Tracker init failed: {e}. Staying in DETECTING mode.")
 
 
         #
