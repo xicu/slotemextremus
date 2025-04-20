@@ -413,12 +413,12 @@ def capture_frames():
                 (x, y, w, h) = cv2.boundingRect(largest_contour)
 
                 # Optional: expand the box a bit
-                pad_x = int(w * 0.3)
-                pad_y = int(h * 0.2)
-                x = max(x - pad_x, 0)
-                y = max(y - pad_y, 0)
-                w = min(w + 2 * pad_x, current_frame_gray.shape[1] - x)
-                h = min(h + 2 * pad_y, current_frame_gray.shape[0] - y)
+#                pad_x = int(w * 0.3)
+#                pad_y = int(h * 0.2)
+#                x = max(x - pad_x, 0)
+#                y = max(y - pad_y, 0)
+#                w = min(w + 2 * pad_x, current_frame_gray.shape[1] - x)
+#                h = min(h + 2 * pad_y, current_frame_gray.shape[0] - y)
 
                 if y < MIN_Y * FRAME_SCALING or y + h > MAX_Y * FRAME_SCALING:
                     pass  # outside Y range
