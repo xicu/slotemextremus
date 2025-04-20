@@ -243,16 +243,12 @@ else:
 picam2.configure(config)
 picam2.start()
 
-current_mode = SystemMode.COOL_DOWN
-cooldown_until = 0
-
 def capture_frames():
     global tracker, last_crossing_time
     global trigger_cooldown, recalibrate_flag
     global last_crossing_direction, new_tracker_type, TRACKER_TYPE, LINE_X
     global tracker_start_time, last_position_in_subframe_coordinates, tracker_last_success_time
     global fps_global_string
-    global current_mode, cooldown_until
 
     prev_frame_time = time.time()
     prev_streamed_time = time.time()
@@ -267,9 +263,13 @@ def capture_frames():
     motion_history = []
 
     while True:
+
+        #
+        # FRAME ACQUISITION
+        #
+
         current_frame_time = time.time()
         current_frame = picam2.capture_array("main")
-
         if DUAL_STREAM_MODE:
             current_frame_resized = picam2.capture_array("lores")
             width, height = picam2.stream_configuration("lores")["size"]
@@ -306,6 +306,10 @@ def capture_frames():
             current_frame_gray = current_frame_gray[min_y_px:max_y_px, :]
 
 
+        #
+        # VARIABLE INITIALIZATION
+        #
+
         if trigger_cooldown:
             motion_history.clear()
             last_position_in_subframe_coordinates = None
@@ -334,8 +338,6 @@ def capture_frames():
 
         if current_mode == SystemMode.COOL_DOWN and current_frame_time >= cooldown_until:
             current_mode = SystemMode.DETECTING
-#            if hasattr(init_tracker, 'avg'):
-#                del init_tracker.avg    # Recalibrating after every cool down
             print(">>> DETECTING mode after COOL_DOWN finished")
 
 
@@ -480,6 +482,11 @@ def capture_frames():
             cv2.putText(current_frame, "Movida", (x_full_frame, y_full_frame - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
+
+        #
+        # STATS
+        #
+
         # Time and FPS calculation
         curr_frame_time = time.time()
         frame_duration = curr_frame_time - prev_frame_time
@@ -512,6 +519,10 @@ def capture_frames():
         cv2.putText(current_frame, f"{fps_string}", (10, 50),
                     cv2.FONT_HERSHEY_SIMPLEX, 1.0, color, 2)
 
+
+        #
+        # STREAMING
+        #
 #       Theoritecally correct, but slower        
 #        try:
 #            frame_queue.put_nowait(frame.copy())
@@ -543,8 +554,6 @@ def generate_stream():
         print("Client disconnected from video stream")
     except Exception as e:
         print(f"Streaming error: {e}")
-
-
 
 @app.route('/get_status')
 def get_status():
@@ -579,7 +588,6 @@ def get_status():
 
     return last_status_result
 
-
 @app.route('/')
 def index():
     return render_template_string(HTML_PAGE,
@@ -596,7 +604,6 @@ def index():
         mem_usage="0",
         throttling_status="Checking...",
         fps_summary=fps_global_string)
-
 
 @app.route('/video_feed')
 def video_feed():
