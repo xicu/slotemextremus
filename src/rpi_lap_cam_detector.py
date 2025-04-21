@@ -39,7 +39,7 @@ recalibrate_flag = False
 
 last_crossing_time = None
 MOTION_HISTORY_LENGTH = 11          # No history with <=1. CPU intensive. Reduces false positives. Keep it at around 1/6th of the FPS.
-CROSSING_FLASH_TIME = 0.5           # Seconds
+CROSSING_FLASH_TIME = 0.4           # Seconds
 COOL_DOWN_TIME = 1.0                # Seconds
 TRACKING_TIMEOUT = 6.0              # Max time in the same tracker
 TRACKING_RESILIENCE_LIMIT = 0.05    # Max time without tracking success before swtiching to DETECTING mode
@@ -264,6 +264,12 @@ def bbox_area(box):
         return 0
     return box[2] * box[3]
 
+def bbox_center(box):
+    if box is None:
+        return None
+    x, y, w, h = box
+    return (x + w // 2, y + h // 2)
+
 # === Camera Setup ===
 picam2 = Picamera2()
 print(picam2.sensor_modes)
@@ -403,9 +409,7 @@ def capture_frames():
 
             success, new_bbox = tracker.update(current_subframe_gray)
             if success:
-                x, y, w, h = [int(v) for v in new_bbox]
-                center_x = x + w // 2
-                center_y = y + h // 2
+                center_x, center_y = bbox_center(new_bbox)
 
                 # Check if object has left the visible frame
                 frame_height, frame_width = current_subframe_gray.shape[:2]
@@ -420,10 +424,10 @@ def capture_frames():
                     new_x = new_bbox[0]
                     if prev_x < LINE_X * FRAME_SCALING and new_x >= LINE_X * FRAME_SCALING:
                         last_crossing_time = current_frame_time
-                        print(f"CROSSING from LEFT to RIGHT")
+                        print(f"--> CROSSING from LEFT to RIGHT")
                     elif prev_x > LINE_X * FRAME_SCALING and new_x <= LINE_X * FRAME_SCALING:
                         last_crossing_time = current_frame_time
-                        print(f"CROSSING from RIGHT to LEFT")
+                        print(f"--> CROSSING from RIGHT to LEFT")
 
                 last_bbox_in_subframe_coordinates = new_bbox
                 tracker_last_success_time = current_frame_time
@@ -473,7 +477,12 @@ def capture_frames():
             max_area = 0
             for c in contours:
                 area = cv2.contourArea(c)
-                if area > (MIN_COUNTOUR_AREA * FRAME_SCALING * FRAME_SCALING) and area > max_area:
+                center_x, center_y = bbox_center(cv2.boundingRect(c))
+
+                if (area > (MIN_COUNTOUR_AREA * FRAME_SCALING * FRAME_SCALING) and      # Min area requirement
+                    area > max_area and                                                 # Getting the largest contour
+                    center_x > current_frame_resized.shape[0] * WIDTH_OFFSET and        # Width offset requirement, left
+                    center_x < current_frame_resized.shape[0] * (1.0-WIDTH_OFFSET)):    # Width offset requirement, right
                     largest_contour = c
                     max_area = area
 
