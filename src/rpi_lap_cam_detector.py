@@ -18,7 +18,7 @@ FRAME_HEIGHT = 720  # Capture height, native being 864 for a pi cam 3
 FRAME_SCALING = 0.5 # Scaling ratio for processing efficiency
 FRAME_FPS = 60      # FPS target
 DUAL_STREAM_MODE = False
-DETECT_WHILE_TRACKING = False  # If True, will use detection while tracking. Contours will expand, but it will be CPU heavy.
+DETECT_WHILE_TRACKING = False  # If True, will use detection while tracking. Contours will expand, but it will be CPU heavy and needs tweaking here and there!
 
 LINE_X = FRAME_WIDTH // 2   # X position of the detection line, in pixels
 MIN_Y = 0.25                # Minimum Y position of the detection line, in percentage
@@ -38,9 +38,8 @@ new_tracker_type = None
 recalibrate_flag = False
 
 last_crossing_time = None
-last_crossing_direction = "N/A"
 MOTION_HISTORY_LENGTH = 11          # No history with <=1. CPU intensive. Reduces false positives. Keep it at around 1/6th of the FPS.
-CROSSING_FLASH_TIME = 0.5
+CROSSING_FLASH_TIME = 0.5           # Seconds
 COOL_DOWN_TIME = 1.0                # Seconds
 TRACKING_TIMEOUT = 6.0              # Max time in the same tracker
 TRACKING_RESILIENCE_LIMIT = 0.05    # Max time without tracking success before swtiching to DETECTING mode
@@ -296,7 +295,7 @@ picam2.start()
 def capture_frames():
     global tracker, last_crossing_time
     global trigger_cooldown, recalibrate_flag
-    global last_crossing_direction, new_tracker_type, TRACKER_TYPE, LINE_X
+    global new_tracker_type, TRACKER_TYPE, LINE_X
     global tracker_start_time, last_bbox_in_subframe_coordinates, tracker_last_success_time
     global fps_global_string
 
@@ -368,8 +367,6 @@ def capture_frames():
             tracker_start_time = None
             last_bbox_in_subframe_coordinates = None
             tracker_last_success_time = None
-            last_crossing_time = None
-            last_crossing_direction = "N/A"
             if hasattr(init_tracker, 'avg'):
                 del init_tracker.avg
             trigger_cooldown = False
@@ -397,54 +394,48 @@ def capture_frames():
         #
 
         if current_mode == SystemMode.TRACKING:
-            success, bbox = tracker.update(current_subframe_gray)
+            # Check if the tracker has been active for too long
+            if tracker_start_time and current_frame_time - tracker_start_time > TRACKING_TIMEOUT:
+                current_mode = SystemMode.COOL_DOWN
+                print(">>> TRACKING -> COOL_DOWN mode after tracker timeout")
+                trigger_cooldown = True
+                continue
+
+            success, new_bbox = tracker.update(current_subframe_gray)
             if success:
-                last_bbox_in_subframe_coordinates = bbox
-                x, y, w, h = [int(v) for v in bbox]
+                x, y, w, h = [int(v) for v in new_bbox]
                 center_x = x + w // 2
                 center_y = y + h // 2
 
                 # Check if object has left the visible frame
                 frame_height, frame_width = current_subframe_gray.shape[:2]
                 if not (0 <= center_x < frame_width and 0 <= center_y < frame_height):
-                    print(">>> COOL_DOWN mode after object left the frame")
+                    print(">>> TRACKING -> COOL_DOWN mode after object left the frame")
                     trigger_cooldown = True
                     continue
 
                 # Detect crossing the line
-# NEEDS REFINEMENT
                 if last_bbox_in_subframe_coordinates:
                     prev_x = last_bbox_in_subframe_coordinates[0]
-                    if prev_x < LINE_X * FRAME_SCALING and center_x >= LINE_X * FRAME_SCALING:
-                        last_crossing_direction = "RIGHT"
+                    new_x = new_bbox[0]
+                    if prev_x < LINE_X * FRAME_SCALING and new_x >= LINE_X * FRAME_SCALING:
                         last_crossing_time = current_frame_time
-                        print(f">>> Object crossed line from LEFT to RIGHT")
-                    elif prev_x > LINE_X * FRAME_SCALING and center_x <= LINE_X * FRAME_SCALING:
-                        last_crossing_direction = "LEFT"
+                        print(f"CROSSING from LEFT to RIGHT")
+                    elif prev_x > LINE_X * FRAME_SCALING and new_x <= LINE_X * FRAME_SCALING:
                         last_crossing_time = current_frame_time
-                        print(f">>> Object crossed line from RIGHT to LEFT")
-                    else:
-                        last_crossing_direction = "N/A"
-                        last_crossing_time = None
+                        print(f"CROSSING from RIGHT to LEFT")
 
-                # Check if the tracker has been active for too long
-                if tracker_start_time and current_frame_time - tracker_start_time > TRACKING_TIMEOUT:
-                    current_mode = SystemMode.COOL_DOWN
-                    print(">>> COOL_DOWN mode after tracker timeout")
-                    trigger_cooldown = True
-                    continue
-
+                last_bbox_in_subframe_coordinates = new_bbox
                 tracker_last_success_time = current_frame_time
 
             else:
                 # Tracking failed
                 if tracker_last_success_time and current_frame_time - tracker_last_success_time > TRACKING_RESILIENCE_LIMIT:
                     current_mode = SystemMode.DETECTING
-                    print(">>> DETECTING mode after tracking resilience limit exceeded")
+                    print(">>> TRACKING -> DETECTING mode after tracking resilience limit exceeded")
                     tracker = None
                     tracker_start_time = None
                     last_bbox_in_subframe_coordinates = None
-                    last_crossing_direction = "N/A"
 
 
         #
@@ -464,7 +455,7 @@ def capture_frames():
 
             # Motion detection
             if MOTION_HISTORY_LENGTH > 1:
-                if current_mode != SystemMode.TRACKING:  # Do NOT use motion history if we're in TRACKING mode (when combining tracking and detection)
+                if current_mode != SystemMode.TRACKING:  # Do NOT update motion history if we're in TRACKING mode (when combining tracking and detection)
                     motion_history.append(thresh.copy())
                 if len(motion_history) > MOTION_HISTORY_LENGTH:
                     motion_history.pop(0)
@@ -494,10 +485,10 @@ def capture_frames():
                     tracker_start_time = current_frame_time
                     tracker_last_success_time = current_frame_time
                     current_mode = SystemMode.TRACKING
-                    print(">>> TRACKING mode after largest averaged contour found")
+                    print(">>> DETECTION -> TRACKING mode after largest averaged contour found")
                 except Exception as e:
                     last_bbox_in_subframe_coordinates = None
-                    print(f">>> Tracker init failed: {e}. Staying in DETECTING mode.")
+                    print(f"ERROR: Tracker init failed: {e}!!! Staying in DETECTING mode.")
 
 
         #

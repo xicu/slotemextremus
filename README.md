@@ -5,8 +5,6 @@ Pending features:
 * Buffer of events to Go server with frame
 
 Little improvements:
-* Save contour instead of bounding box for last know position
-* Better line_x cross detection
 * Line_X as a percentage
 * Use nanotime from capturerequest instead of system time
 
