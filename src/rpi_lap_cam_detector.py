@@ -18,10 +18,12 @@ FRAME_HEIGHT = 720  # Capture height, native being 864 for a pi cam 3
 FRAME_SCALING = 0.5 # Scaling ratio for processing efficiency
 FRAME_FPS = 60      # FPS target
 DUAL_STREAM_MODE = False
+DETECT_WHILE_TRACKING = False  # If True, will use detection while tracking. Contours will expand, but it will be CPU heavy.
 
 LINE_X = FRAME_WIDTH // 2   # X position of the detection line, in pixels
 MIN_Y = 0.25                # Minimum Y position of the detection line, in percentage
 MAX_Y = 0.80                # Maximum Y position of the detection line, in percentage
+WIDTH_OFFSET = 0.2          # Offset for the width of the detection line, in percentage, to mitigate detecting only fronts of the cars
 MIN_COUNTOUR_AREA = 500     # Minimum area of contour to consider for tracking
 
 # === Streaming quality ===
@@ -53,7 +55,7 @@ last_status_result = {}
 # Tracker timing & movement
 tracker_start_time = None
 tracker_last_success_time = None
-last_position_in_subframe_coordinates = None
+last_bbox_in_subframe_coordinates = None
 
 # === Flask HTML Template ===
 HTML_PAGE = """
@@ -215,8 +217,7 @@ def reset_autofocus():
     except Exception as e:
         print(f"Error resetting autofocus: {e}")
 
-# True if box_a contains box_b, False otherwise
-def bbox_contains(box_a, box_b):
+# === Bounding Box Functions ===
     if box_a is None:
         return False
 
@@ -248,6 +249,21 @@ def bbox_intersects(box_a, box_b):
 
     # Check if there's an overlap
     return not (ax2 < bx or bx2 < ax or ay2 < by or by2 < ay)
+
+def bbox_is_larger(box_a, box_b):
+    if box_a is None:
+        return False
+
+    if box_b is None:
+        return True
+
+    # Check if A is larger than B
+    return (box_a[2] * box_a[3]) > (box_b[2] * box_b[3])
+
+def bbox_area(box):
+    if box is None:
+        return 0
+    return box[2] * box[3]
 
 # === Camera Setup ===
 picam2 = Picamera2()
@@ -281,7 +297,7 @@ def capture_frames():
     global tracker, last_crossing_time
     global trigger_cooldown, recalibrate_flag
     global last_crossing_direction, new_tracker_type, TRACKER_TYPE, LINE_X
-    global tracker_start_time, last_position_in_subframe_coordinates, tracker_last_success_time
+    global tracker_start_time, last_bbox_in_subframe_coordinates, tracker_last_success_time
     global fps_global_string
 
     prev_frame_time = time.time()
@@ -346,12 +362,13 @@ def capture_frames():
 
         if trigger_cooldown:
             motion_history.clear()
-            last_position_in_subframe_coordinates = None
             current_mode = SystemMode.COOL_DOWN
             cooldown_until = current_frame_time + COOL_DOWN_TIME
             tracker = None
             tracker_start_time = None
-            last_position_in_subframe_coordinates = None
+            last_bbox_in_subframe_coordinates = None
+            tracker_last_success_time = None
+            last_crossing_time = None
             last_crossing_direction = "N/A"
             if hasattr(init_tracker, 'avg'):
                 del init_tracker.avg
@@ -367,7 +384,7 @@ def capture_frames():
             TRACKER_TYPE = new_tracker_type
             tracker = None
             tracker_start_time = None
-            last_position_in_subframe_coordinates = None
+            last_bbox_in_subframe_coordinates = None
             new_tracker_type = None
 
         if current_mode == SystemMode.COOL_DOWN and current_frame_time >= cooldown_until:
@@ -382,7 +399,7 @@ def capture_frames():
         if current_mode == SystemMode.TRACKING:
             success, bbox = tracker.update(current_subframe_gray)
             if success:
-                last_position_in_subframe_coordinates = bbox
+                last_bbox_in_subframe_coordinates = bbox
                 x, y, w, h = [int(v) for v in bbox]
                 center_x = x + w // 2
                 center_y = y + h // 2
@@ -396,8 +413,8 @@ def capture_frames():
 
                 # Detect crossing the line
 # NEEDS REFINEMENT
-                if last_position_in_subframe_coordinates:
-                    prev_x = last_position_in_subframe_coordinates[0]
+                if last_bbox_in_subframe_coordinates:
+                    prev_x = last_bbox_in_subframe_coordinates[0]
                     if prev_x < LINE_X * FRAME_SCALING and center_x >= LINE_X * FRAME_SCALING:
                         last_crossing_direction = "RIGHT"
                         last_crossing_time = current_frame_time
@@ -408,6 +425,7 @@ def capture_frames():
                         print(f">>> Object crossed line from RIGHT to LEFT")
                     else:
                         last_crossing_direction = "N/A"
+                        last_crossing_time = None
 
                 # Check if the tracker has been active for too long
                 if tracker_start_time and current_frame_time - tracker_start_time > TRACKING_TIMEOUT:
@@ -425,7 +443,7 @@ def capture_frames():
                     print(">>> DETECTING mode after tracking resilience limit exceeded")
                     tracker = None
                     tracker_start_time = None
-                    last_position_in_subframe_coordinates = None
+                    last_bbox_in_subframe_coordinates = None
                     last_crossing_direction = "N/A"
 
 
@@ -433,8 +451,7 @@ def capture_frames():
         # DETECTION
         #
 
-#        if current_mode == SystemMode.DETECTING or current_mode == SystemMode.TRACKING:
-        elif current_mode == SystemMode.DETECTING:
+        if current_mode == SystemMode.DETECTING or (DETECT_WHILE_TRACKING and current_mode == SystemMode.TRACKING):
 #           Should we use the aggregation instead?????
             blur = cv2.GaussianBlur(current_subframe_gray, (21, 21), 0)
 
@@ -447,8 +464,8 @@ def capture_frames():
 
             # Motion detection
             if MOTION_HISTORY_LENGTH > 1:
-                # Save motion frame to history, and don't do anything else if not enough frames
-                motion_history.append(thresh.copy())
+                if current_mode != SystemMode.TRACKING:  # Do NOT use motion history if we're in TRACKING mode (when combining tracking and detection)
+                    motion_history.append(thresh.copy())
                 if len(motion_history) > MOTION_HISTORY_LENGTH:
                     motion_history.pop(0)
                 # Combine all motion masks
@@ -469,19 +486,17 @@ def capture_frames():
                     largest_contour = c
                     max_area = area
 
-            if largest_contour is not None:
-#            if largest_contour is not None and bbox_contains(cv2.boundingRect(largest_contour), last_position_in_subframe_coordinates):
-# BREAKS IF LAST_POSITION IS NONE
-#            if largest_contour is not None and max_area > (last_position_in_subframe_coordinates[2] * last_position_in_subframe_coordinates[3]):
+            # Note that the last bbox will eithet be empty or will be overridable when combining tracking and detection is enabled
+            if max_area > 0 and max_area >= bbox_area(last_bbox_in_subframe_coordinates):
                 try:
-                    last_position_in_subframe_coordinates = cv2.boundingRect(largest_contour)
-                    tracker = init_tracker(current_subframe_gray, last_position_in_subframe_coordinates)
+                    last_bbox_in_subframe_coordinates = cv2.boundingRect(largest_contour)
+                    tracker = init_tracker(current_subframe_gray, last_bbox_in_subframe_coordinates)
                     tracker_start_time = current_frame_time
                     tracker_last_success_time = current_frame_time
                     current_mode = SystemMode.TRACKING
                     print(">>> TRACKING mode after largest averaged contour found")
                 except Exception as e:
-                    last_position_in_subframe_coordinates = None
+                    last_bbox_in_subframe_coordinates = None
                     print(f">>> Tracker init failed: {e}. Staying in DETECTING mode.")
 
 
@@ -501,11 +516,11 @@ def capture_frames():
         cv2.line(current_frame, (LINE_X, int(FRAME_HEIGHT*MIN_Y)), (LINE_X, int(FRAME_HEIGHT*MAX_Y)), (0, 255, 0), 2)
 
         # Bounding box
-        if tracker and last_position_in_subframe_coordinates:
-            x_full_frame = int(last_position_in_subframe_coordinates[0]/FRAME_SCALING)
-            y_full_frame = int((last_position_in_subframe_coordinates[1]+min_y_px)/FRAME_SCALING)
-            w_full_frame = int(last_position_in_subframe_coordinates[2]/FRAME_SCALING)
-            h_full_frame = int(last_position_in_subframe_coordinates[3]/FRAME_SCALING)
+        if last_bbox_in_subframe_coordinates:
+            x_full_frame = int(last_bbox_in_subframe_coordinates[0]/FRAME_SCALING)
+            y_full_frame = int((last_bbox_in_subframe_coordinates[1]+min_y_px)/FRAME_SCALING)
+            w_full_frame = int(last_bbox_in_subframe_coordinates[2]/FRAME_SCALING)
+            h_full_frame = int(last_bbox_in_subframe_coordinates[3]/FRAME_SCALING)
             cv2.rectangle(current_frame, (x_full_frame, y_full_frame), (x_full_frame + w_full_frame, y_full_frame + h_full_frame), (0, 255, 0), 2)
             cv2.putText(current_frame, "Movida", (x_full_frame, y_full_frame - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
