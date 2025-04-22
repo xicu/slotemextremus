@@ -302,7 +302,7 @@ picam2.start()
 def capture_frames():
     global tracker, last_crossing_time
     global trigger_cooldown, recalibrate_flag
-    global new_tracker_type, TRACKER_TYPE, LINE_X
+    global new_tracker_type, TRACKER_TYPE, LINE_X, DETECT_SHADOWS
     global tracker_start_time, last_bbox_in_subframe_coordinates, tracker_last_success_time
     global fps_global_string
 
@@ -325,7 +325,7 @@ def capture_frames():
     # history: Number of frames to use for background modeling.
     # varThreshold: Higher = less sensitive to movement.
     # detectShadows: If True, shadows will be marked gray (127), not white (255).
-    back_sub = cv2.createBackgroundSubtractorMOG2(history=100, varThreshold=50, detectShadows=DETECT_SHADOWS)
+    back_sub = cv2.createBackgroundSubtractorKNN(history=100, dist2Threshold=400.0, detectShadows=DETECT_SHADOWS)
 
     while True:
 
@@ -370,6 +370,9 @@ def capture_frames():
             # Crop vertically
             current_subframe_gray = current_subframe_gray[min_y_px:max_y_px, :]
 
+        # Feed the background substractor
+        back_sub_thresh = back_sub.apply(current_subframe_gray)
+
 
         #
         # VARIABLE INITIALIZATION
@@ -386,7 +389,7 @@ def capture_frames():
             trigger_cooldown = False
 
         if recalibrate_flag:        ### NOT NEEDED - KEPT AS PLACEHOLDER FOR ANOTHER BUTTON
-            back_sub = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=16, detectShadows=True)
+            back_sub = cv2.createBackgroundSubtractorKNN(history=100, dist2Threshold=400.0, detectShadows=DETECT_SHADOWS)
             trigger_cooldown = True
             recalibrate_flag = False
             continue
@@ -468,9 +471,9 @@ def capture_frames():
 #            thresh = cv2.threshold(frame_delta, 15, 255, cv2.THRESH_BINARY)[1]
 
             # Background subtraction
-            thresh = back_sub.apply(current_subframe_gray)
+            back_sub_thresh = back_sub.apply(current_subframe_gray)
             if DETECT_SHADOWS:  # Removes shadows (if detectShadows=True)
-                thresh = cv2.threshold(thresh, 200, 255, cv2.THRESH_BINARY)[1]
+                back_sub_thresh = cv2.threshold(back_sub_thresh, 200, 255, cv2.THRESH_BINARY)[1]
 
             # thresh = cv2.dilate(thresh, None, iterations=2)                   # Optional cleaning up - removes noise
             # thresh = cv2.erode(thresh, None, iterations=1)                    # Optional: Erode to remove noise
@@ -478,20 +481,20 @@ def capture_frames():
             # Remove noise and fill gaps
             kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
             # First: remove noise
-            thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
+            back_sub_thresh = cv2.morphologyEx(back_sub_thresh, cv2.MORPH_OPEN, kernel)
             # Then: close small holes inside objects
-            thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+            #thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
 
             # Motion detection
             if MOTION_HISTORY_LENGTH > 1:
                 if current_mode != SystemMode.TRACKING:  # Do NOT update motion history if we're in TRACKING mode (when combining tracking and detection)
-                    motion_history.append(thresh.copy())
+                    motion_history.append(back_sub_thresh.copy())
                 if len(motion_history) > MOTION_HISTORY_LENGTH:
                     motion_history.pop(0)
                 # Combine all motion masks
                 motion = np.bitwise_or.reduce(motion_history)
             else:
-                motion = cv2.dilate(thresh, None, iterations=2)
+                motion = cv2.dilate(back_sub_thresh, None, iterations=2)
 
             # Find contours only when we're not waiting for the motion history to build up
             contours = []
@@ -664,8 +667,7 @@ def index():
         line_x=LINE_X,
         min_y=int(MIN_Y*100),
         max_y=int(MAX_Y*100),
-        width=int(FRAME_WIDTH*STREAM_SCALING),
-        height=int(FRAME_HEIGHT*STREAM_SCALING),
+        width=int(FRAME_WIDTH),
         cpu_usage="Calculating...",
         cpu_temp="N/A",
         cpu_freq="0",
