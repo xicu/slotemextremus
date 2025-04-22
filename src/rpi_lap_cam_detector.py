@@ -28,8 +28,8 @@ MIN_COUNTOUR_AREA = 1000    # Minimum area of contour to consider for tracking
 
 # === Streaming quality ===
 STREAM_QUALITY = 30
-STREAM_FPS_MAX = 35
-STREAM_SCALING = 1
+STREAM_FPS_MAX = 30
+STREAM_SCALING = 0.4
 streaming_frame_queue = queue.Queue(maxsize=2)  # smoother than a lock
 
 # === Globals ===
@@ -40,9 +40,10 @@ recalibrate_flag = False
 last_crossing_time = None
 MOTION_HISTORY_LENGTH = 5           # No history with <=1. CPU intensive. Reduces false positives. Brings tails to objects.
 CROSSING_FLASH_TIME = 0.4           # Seconds
-COOL_DOWN_TIME = 0.5                # Seconds
+COOL_DOWN_TIME = 1.0                # Seconds
 TRACKING_TIMEOUT = 5.0              # Max time in the same tracker
 TRACKING_RESILIENCE_LIMIT = 0.05    # Max time without tracking success before swtiching to DETECTING mode
+DETECT_SHADOWS = False              # For the background substractor config
 TRACKER_TYPE = None
 tracker = None
 fps_global_string = "Calculating..."
@@ -317,6 +318,15 @@ def capture_frames():
 
     motion_history = []
 
+    # Background subtraction
+    # Use MOG2 for better performance in low light conditions
+    # Use KNN for better performance in bright light conditions
+    # Use MOG for better performance in high motion conditions
+    # history: Number of frames to use for background modeling.
+    # varThreshold: Higher = less sensitive to movement.
+    # detectShadows: If True, shadows will be marked gray (127), not white (255).
+    back_sub = cv2.createBackgroundSubtractorMOG2(history=100, varThreshold=50, detectShadows=DETECT_SHADOWS)
+
     while True:
 
         #
@@ -373,15 +383,13 @@ def capture_frames():
             tracker_start_time = None
             last_bbox_in_subframe_coordinates = None
             tracker_last_success_time = None
-            if hasattr(init_tracker, 'avg'):
-                del init_tracker.avg
             trigger_cooldown = False
 
         if recalibrate_flag:        ### NOT NEEDED - KEPT AS PLACEHOLDER FOR ANOTHER BUTTON
-            if hasattr(init_tracker, 'avg'):
-                del init_tracker.avg
-            motion_history.clear()
+            back_sub = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=16, detectShadows=True)
+            trigger_cooldown = True
             recalibrate_flag = False
+            continue
 
         if new_tracker_type and new_tracker_type != TRACKER_TYPE:
             TRACKER_TYPE = new_tracker_type
@@ -450,14 +458,29 @@ def capture_frames():
         #
 
         if current_mode == SystemMode.DETECTING or (DETECT_WHILE_TRACKING and current_mode == SystemMode.TRACKING):
-            blur = cv2.GaussianBlur(current_subframe_gray, (21, 21), 0)
 
-            if not hasattr(init_tracker, 'avg'):
-                init_tracker.avg = blur.copy().astype("float")
+            # Manual background subtraction
+#            blur = cv2.GaussianBlur(current_subframe_gray, (21, 21), 0)
+#            if not hasattr(init_tracker, 'avg'):
+#                init_tracker.avg = blur.copy().astype("float")
+#            cv2.accumulateWeighted(blur, init_tracker.avg, 0.2)
+#            frame_delta = cv2.absdiff(blur, cv2.convertScaleAbs(init_tracker.avg))
+#            thresh = cv2.threshold(frame_delta, 15, 255, cv2.THRESH_BINARY)[1]
 
-            cv2.accumulateWeighted(blur, init_tracker.avg, 0.2)
-            frame_delta = cv2.absdiff(blur, cv2.convertScaleAbs(init_tracker.avg))
-            thresh = cv2.threshold(frame_delta, 15, 255, cv2.THRESH_BINARY)[1]
+            # Background subtraction
+            thresh = back_sub.apply(current_subframe_gray)
+            if DETECT_SHADOWS:  # Removes shadows (if detectShadows=True)
+                thresh = cv2.threshold(thresh, 200, 255, cv2.THRESH_BINARY)[1]
+
+            # thresh = cv2.dilate(thresh, None, iterations=2)                   # Optional cleaning up - removes noise
+            # thresh = cv2.erode(thresh, None, iterations=1)                    # Optional: Erode to remove noise
+
+            # Remove noise and fill gaps
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+            # First: remove noise
+            thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
+            # Then: close small holes inside objects
+            thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
 
             # Motion detection
             if MOTION_HISTORY_LENGTH > 1:
@@ -483,8 +506,8 @@ def capture_frames():
 
                 if (area > (MIN_COUNTOUR_AREA * FRAME_SCALING * FRAME_SCALING) and      # Min area requirement
                     area > max_area and                                                 # Getting the largest contour
-                    center_x > current_frame_resized.shape[0] * WIDTH_OFFSET and        # Width offset requirement, left
-                    center_x < current_frame_resized.shape[0] * (1.0-WIDTH_OFFSET)):    # Width offset requirement, right
+                    center_x > current_frame_resized.shape[1] * WIDTH_OFFSET and        # Width offset requirement, left
+                    center_x < current_frame_resized.shape[1] * (1.0-WIDTH_OFFSET)):    # Width offset requirement, right
                     largest_contour = c
                     max_area = area
 
