@@ -16,11 +16,11 @@ app = Flask(__name__)
 FRAME_WIDTH = 1280  # Capture width, native being 1536 for a pi cam 3
 FRAME_HEIGHT = 720  # Capture height, native being 864 for a pi cam 3
 FRAME_SCALING = 0.5 # Scaling ratio for processing efficiency
-FRAME_FPS = 100      # FPS target
+FRAME_FPS = 60      # FPS target
 DUAL_STREAM_MODE = False
 DETECT_WHILE_TRACKING = False  # If True, will use detection while tracking. Contours will expand, but it will be CPU heavy and needs tweaking here and there!
 
-LINE_X = FRAME_WIDTH // 1.5 # X position of the detection line, in pixels
+LINE_X = 800                # X position of the detection line, in pixels
 MIN_Y = 0.20                # Minimum Y position of the detection line, in percentage
 MAX_Y = 0.85                # Maximum Y position of the detection line, in percentage
 WIDTH_OFFSET = 0.1          # Offset for the width of the detection line, in percentage, to mitigate detecting only fronts of the cars. The center of the bbox can't be in this area.
@@ -409,9 +409,8 @@ def capture_frames():
 
             success, new_bbox = tracker.update(current_subframe_gray)
             if success:
-                center_x, center_y = bbox_center(new_bbox)
-
                 # Check if object has left the visible frame
+                center_x, center_y = bbox_center(new_bbox)
                 frame_height, frame_width = current_subframe_gray.shape[:2]
                 if not (0 <= center_x < frame_width and 0 <= center_y < frame_height):
                     print(">>> TRACKING -> COOL_DOWN mode after object left the frame")
@@ -420,13 +419,15 @@ def capture_frames():
 
                 # Detect crossing the line
                 if last_bbox_in_subframe_coordinates:
-                    prev_x = last_bbox_in_subframe_coordinates[0]
-                    new_x = new_bbox[0]
-                    if prev_x < LINE_X * FRAME_SCALING and new_x >= LINE_X * FRAME_SCALING:
+                    prev_x1 = last_bbox_in_subframe_coordinates[0]
+                    prev_x2 = prev_x1 + last_bbox_in_subframe_coordinates[2]
+                    new_x1 = new_bbox[0]
+                    new_x2 = new_x1 + new_bbox[2]
+                    if prev_x2 < LINE_X * FRAME_SCALING and new_x2 >= LINE_X * FRAME_SCALING:
                         last_crossing_time = current_frame_time
                         tracker_start_time = current_frame_time         # Extend the TTL of the tracker
                         print(f"--> CROSSING from LEFT to RIGHT")
-                    elif prev_x > LINE_X * FRAME_SCALING and new_x <= LINE_X * FRAME_SCALING:
+                    elif prev_x1 > LINE_X * FRAME_SCALING and new_x1 <= LINE_X * FRAME_SCALING:
                         last_crossing_time = current_frame_time
                         tracker_start_time = current_frame_time         # Extend the TTL of the tracker
                         print(f"--> CROSSING from RIGHT to LEFT")
@@ -449,7 +450,6 @@ def capture_frames():
         #
 
         if current_mode == SystemMode.DETECTING or (DETECT_WHILE_TRACKING and current_mode == SystemMode.TRACKING):
-#           Should we use the aggregation instead?????
             blur = cv2.GaussianBlur(current_subframe_gray, (21, 21), 0)
 
             if not hasattr(init_tracker, 'avg'):
