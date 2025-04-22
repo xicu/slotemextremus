@@ -27,8 +27,8 @@ WIDTH_OFFSET = 0.1          # Offset for the width of the detection line, in per
 MIN_COUNTOUR_AREA = 1000    # Minimum area of contour to consider for tracking
 
 # === Streaming quality ===
-STREAM_QUALITY = 30
-STREAM_FPS_MAX = 30
+STREAM_QUALITY = 35
+STREAM_EVERY_X_FRAMES = 2   # It will stream only every {x} frames
 STREAM_SCALING = 0.4
 streaming_frame_queue = queue.Queue(maxsize=2)  # smoother than a lock
 
@@ -307,7 +307,6 @@ def capture_frames():
     global fps_global_string
 
     prev_frame_time = time.time()
-    prev_streamed_time = time.time()
 
     fps_temp_counter = 0
     fps_temp_start = time.time()
@@ -599,8 +598,7 @@ def capture_frames():
 #            frame_queue.put_nowait(frame.copy())
 #        except queue.Full:
 #            pass  # just skip, or log dropped frames
-        if curr_frame_time - prev_streamed_time >= 1.0/STREAM_FPS_MAX and not streaming_frame_queue.full():
-            prev_streamed_time = curr_frame_time
+        if STREAM_EVERY_X_FRAMES > 1 and fps_temp_counter % STREAM_EVERY_X_FRAMES == 0 and not streaming_frame_queue.full():
             streaming_frame_queue.put_nowait(current_frame.copy())
 
         time.sleep(0.001)   # Avoid suffocating the CPU
