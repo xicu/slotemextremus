@@ -23,7 +23,7 @@ DETECT_WHILE_TRACKING = False  # If True, will use detection while tracking. Con
 LINE_X = 800                # X position of the detection line, in pixels
 MIN_Y = 0.20                # Minimum Y position of the detection line, in percentage
 MAX_Y = 0.85                # Maximum Y position of the detection line, in percentage
-WIDTH_OFFSET = 0.1          # Offset for the width of the detection line, in percentage, to mitigate detecting only fronts of the cars. The center of the bbox can't be in this area.
+WIDTH_OFFSET = 0.10         # Offset for the width of the detection line, in percentage, to mitigate detecting only fronts of the cars. The center of the bbox can't be in this area.
 MIN_COUNTOUR_AREA = 1000    # Minimum area of contour to consider for tracking
 
 # === Streaming quality ===
@@ -504,12 +504,13 @@ def capture_frames():
             max_area = 0
             for c in contours:
                 area = cv2.contourArea(c)
-                center_x, center_y = bbox_center(cv2.boundingRect(c))
+                bbox = cv2.boundingRect(c)
+                center_x, center_y = bbox_center(bbox)
 
-                if (area > (MIN_COUNTOUR_AREA * FRAME_SCALING * FRAME_SCALING) and      # Min area requirement
-                    area > max_area and                                                 # Getting the largest contour
-                    center_x > current_frame_resized.shape[1] * WIDTH_OFFSET and        # Width offset requirement, left
-                    center_x < current_frame_resized.shape[1] * (1.0-WIDTH_OFFSET)):    # Width offset requirement, right
+                if (area > max_area and                                                         # Getting the largest contour
+                    area > (MIN_COUNTOUR_AREA * FRAME_SCALING * FRAME_SCALING) and              # Min area requirement
+                    (bbox[1]+bbox[2]) > (current_frame_resized.shape[1] * WIDTH_OFFSET) and     # Not too close to the left edge
+                    bbox[0] < current_frame_resized.shape[1] * (1.0-WIDTH_OFFSET)):             # Not too close to the right edge
                     largest_contour = c
                     max_area = area
 
