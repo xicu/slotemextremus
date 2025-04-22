@@ -23,12 +23,12 @@ DETECT_WHILE_TRACKING = False  # If True, will use detection while tracking. Con
 LINE_X = 800                # X position of the detection line, in pixels
 MIN_Y = 0.20                # Minimum Y position of the detection line, in percentage
 MAX_Y = 0.85                # Maximum Y position of the detection line, in percentage
-WIDTH_OFFSET = 0.10         # Offset for the width of the detection line, in percentage, to mitigate detecting only fronts of the cars. The center of the bbox can't be in this area.
-MIN_COUNTOUR_AREA = 1000    # Minimum area of contour to consider for tracking
+WIDTH_OFFSET = 0.15         # Offset for the width of the detection line, in percentage, to mitigate detecting only fronts of the cars. The center of the bbox can't be in this area.
+MIN_COUNTOUR_AREA = 0.03    # Minimum area of contour to consider for tracking, in percentage of the frame size
 
 # === Streaming quality ===
 STREAM_QUALITY = 35
-STREAM_EVERY_X_FRAMES = 2   # It will stream only every {x} frames
+STREAM_EVERY_X_FRAMES = 3   # It will stream only every {x} frames
 STREAM_SCALING = 0.4
 streaming_frame_queue = queue.Queue(maxsize=2)  # smoother than a lock
 
@@ -42,7 +42,7 @@ MOTION_HISTORY_LENGTH = 5           # No history with <=1. CPU intensive. Reduce
 CROSSING_FLASH_TIME = 0.4           # Seconds
 COOL_DOWN_TIME = 1.0                # Seconds
 TRACKING_TIMEOUT = 5.0              # Max time in the same tracker
-TRACKING_RESILIENCE_LIMIT = 0.05    # Max time without tracking success before swtiching to DETECTING mode
+TRACKING_RESILIENCE_LIMIT = 0.01    # Max time without tracking success before swtiching to DETECTING mode
 DETECT_SHADOWS = False              # For the background substractor config
 TRACKER_TYPE = None
 tracker = None
@@ -334,37 +334,30 @@ def capture_frames():
 
         current_frame_time = time.time()
         current_frame = picam2.capture_array("main")
+        scaled_frame_width = int(current_frame.shape[1] * FRAME_SCALING)
+        scaled_frame_height = int(current_frame.shape[0] * FRAME_SCALING)
+        min_y_px = int(scaled_frame_height * MIN_Y)
+        max_y_px = int(scaled_frame_height * MAX_Y)
+        min_accepted_area = int(scaled_frame_width * scaled_frame_height * MIN_COUNTOUR_AREA)
+
+        # Resize and crop for processing
         if DUAL_STREAM_MODE:
             current_frame_resized = picam2.capture_array("lores")
-            width, height = picam2.stream_configuration("lores")["size"]
-
-            # Calculate cropping bounds in pixels
-            min_y_px = int(height * MIN_Y)
-            max_y_px = int(height * MAX_Y)
-
-            # Efficient grayscale extraction and vertical crop
-            current_subframe_gray = current_frame_resized[min_y_px:max_y_px, :width]
+            current_subframe_gray = current_frame_resized[min_y_px:max_y_px, :scaled_frame_width]
 
         else:
             # Resize frame
             current_frame_resized = cv2.resize(
                 current_frame,
                 (
-                    int(current_frame.shape[1] * FRAME_SCALING),
-                    int(current_frame.shape[0] * FRAME_SCALING)
+                    scaled_frame_width,
+                    scaled_frame_height
                 ),
                 interpolation=cv2.INTER_LINEAR  # INTER_AREA gives more quality
             )
 
             # Convert to grayscale
             current_subframe_gray = cv2.cvtColor(current_frame_resized, cv2.COLOR_BGR2GRAY)
-
-            # Get new height after resize
-            height = current_subframe_gray.shape[0]
-
-            # Calculate cropping bounds in pixels
-            min_y_px = int(height * MIN_Y)
-            max_y_px = int(height * MAX_Y)
 
             # Crop vertically
             current_subframe_gray = current_subframe_gray[min_y_px:max_y_px, :]
@@ -505,16 +498,15 @@ def capture_frames():
             for c in contours:
                 area = cv2.contourArea(c)
                 bbox = cv2.boundingRect(c)
-                center_x, center_y = bbox_center(bbox)
 
                 if (area > max_area and                                                         # Getting the largest contour
-                    area > (MIN_COUNTOUR_AREA * FRAME_SCALING * FRAME_SCALING) and              # Min area requirement
+                    area > min_accepted_area and                                                # Min area requirement
                     (bbox[1]+bbox[2]) > (current_frame_resized.shape[1] * WIDTH_OFFSET) and     # Not too close to the left edge
                     bbox[0] < current_frame_resized.shape[1] * (1.0-WIDTH_OFFSET)):             # Not too close to the right edge
                     largest_contour = c
                     max_area = area
 
-            # Note that the last bbox will eithet be empty or will be overridable when combining tracking and detection is enabled
+            # Note that the last bbox will either be empty or will be overridable when combining tracking and detection is enabled
             if max_area > 0 and max_area >= bbox_area(last_bbox_in_subframe_coordinates):
                 try:
                     last_bbox_in_subframe_coordinates = cv2.boundingRect(largest_contour)
@@ -522,7 +514,7 @@ def capture_frames():
                     tracker_start_time = current_frame_time
                     tracker_last_success_time = current_frame_time
                     current_mode = SystemMode.TRACKING
-                    print(">>> DETECTION -> TRACKING mode after largest averaged contour found")
+                    print(">>> DETECTION -> TRACKING mode with the largest contour found")
                 except Exception as e:
                     last_bbox_in_subframe_coordinates = None
                     print(f"ERROR: Tracker init failed: {e}!!! Staying in DETECTING mode.")
