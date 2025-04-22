@@ -6,6 +6,8 @@ Pending features:
 
 Little improvements:
 * Line_X as a percentage
+* Minimum contour area as percentage
+* Show timestamps
 * Use nanotime from capturerequest instead of system time
 
 Big improvements:
@@ -13,6 +15,7 @@ Big improvements:
 * Try cv2.createBackgroundSubtractorMOG2 instead of the manual motion history
 * Load the motion history while in cooldown
 * Detect & track to a different thread, queue to communicate, and skip frames when queue grows
+* Better substract the background (there's a tail now when objects are large, maybe because of the motion history? But motion history reduces false positives...)
 
 Day dreaming:
 * Use YOLO to actually track cars

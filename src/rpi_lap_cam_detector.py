@@ -16,18 +16,18 @@ app = Flask(__name__)
 FRAME_WIDTH = 1280  # Capture width, native being 1536 for a pi cam 3
 FRAME_HEIGHT = 720  # Capture height, native being 864 for a pi cam 3
 FRAME_SCALING = 0.5 # Scaling ratio for processing efficiency
-FRAME_FPS = 60      # FPS target
+FRAME_FPS = 100      # FPS target
 DUAL_STREAM_MODE = False
 DETECT_WHILE_TRACKING = False  # If True, will use detection while tracking. Contours will expand, but it will be CPU heavy and needs tweaking here and there!
 
-LINE_X = FRAME_WIDTH // 2   # X position of the detection line, in pixels
-MIN_Y = 0.25                # Minimum Y position of the detection line, in percentage
-MAX_Y = 0.80                # Maximum Y position of the detection line, in percentage
-WIDTH_OFFSET = 0.2          # Offset for the width of the detection line, in percentage, to mitigate detecting only fronts of the cars
-MIN_COUNTOUR_AREA = 500     # Minimum area of contour to consider for tracking
+LINE_X = FRAME_WIDTH // 1.5 # X position of the detection line, in pixels
+MIN_Y = 0.20                # Minimum Y position of the detection line, in percentage
+MAX_Y = 0.85                # Maximum Y position of the detection line, in percentage
+WIDTH_OFFSET = 0.1          # Offset for the width of the detection line, in percentage, to mitigate detecting only fronts of the cars. The center of the bbox can't be in this area.
+MIN_COUNTOUR_AREA = 1000    # Minimum area of contour to consider for tracking
 
 # === Streaming quality ===
-STREAM_QUALITY = 35
+STREAM_QUALITY = 30
 STREAM_FPS_MAX = 35
 STREAM_SCALING = 1
 streaming_frame_queue = queue.Queue(maxsize=2)  # smoother than a lock
@@ -38,10 +38,10 @@ new_tracker_type = None
 recalibrate_flag = False
 
 last_crossing_time = None
-MOTION_HISTORY_LENGTH = 11          # No history with <=1. CPU intensive. Reduces false positives. Keep it at around 1/6th of the FPS.
+MOTION_HISTORY_LENGTH = 5           # No history with <=1. CPU intensive. Reduces false positives. Brings tails to objects.
 CROSSING_FLASH_TIME = 0.4           # Seconds
-COOL_DOWN_TIME = 1.0                # Seconds
-TRACKING_TIMEOUT = 6.0              # Max time in the same tracker
+COOL_DOWN_TIME = 0.5                # Seconds
+TRACKING_TIMEOUT = 5.0              # Max time in the same tracker
 TRACKING_RESILIENCE_LIMIT = 0.05    # Max time without tracking success before swtiching to DETECTING mode
 TRACKER_TYPE = None
 tracker = None
@@ -424,9 +424,11 @@ def capture_frames():
                     new_x = new_bbox[0]
                     if prev_x < LINE_X * FRAME_SCALING and new_x >= LINE_X * FRAME_SCALING:
                         last_crossing_time = current_frame_time
+                        tracker_start_time = current_frame_time         # Extend the TTL of the tracker
                         print(f"--> CROSSING from LEFT to RIGHT")
                     elif prev_x > LINE_X * FRAME_SCALING and new_x <= LINE_X * FRAME_SCALING:
                         last_crossing_time = current_frame_time
+                        tracker_start_time = current_frame_time         # Extend the TTL of the tracker
                         print(f"--> CROSSING from RIGHT to LEFT")
 
                 last_bbox_in_subframe_coordinates = new_bbox
