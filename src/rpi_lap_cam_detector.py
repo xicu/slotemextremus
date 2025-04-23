@@ -38,7 +38,7 @@ new_tracker_type = None
 recalibrate_flag = False
 
 last_crossing_time = None
-MOTION_HISTORY_LENGTH = 1           # No history with <=1. CPU intensive. Reduces false positives. Brings tails to objects.
+MOTION_HISTORY_LENGTH = 0           # No contour change with 0. Dilate with 1. Real motion history with >1.
 CROSSING_FLASH_TIME = 0.4           # Seconds
 COOL_DOWN_TIME = 1.0                # Seconds
 TRACKING_TIMEOUT = 5.0              # Max time in the same tracker
@@ -486,21 +486,21 @@ def capture_frames():
             # Then: close small holes inside objects
             #thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
 
-            # Motion detection
+            # Motion detection (note that ==1 is dilation, and ==0 is nothing)
             if MOTION_HISTORY_LENGTH > 1:
                 if current_mode != SystemMode.TRACKING:  # Do NOT update motion history if we're in TRACKING mode (when combining tracking and detection)
                     motion_history.append(back_sub_thresh.copy())
                 if len(motion_history) > MOTION_HISTORY_LENGTH:
                     motion_history.pop(0)
                 # Combine all motion masks
-                motion = np.bitwise_or.reduce(motion_history)
-            else:
-                motion = cv2.dilate(back_sub_thresh, None, iterations=2)
+                back_sub_thresh = np.bitwise_or.reduce(motion_history)
+            elif MOTION_HISTORY_LENGTH == 1:
+                back_sub_thresh = cv2.dilate(back_sub_thresh, None, iterations=2)
 
             # Find contours only when we're not waiting for the motion history to build up
             contours = []
             if not (MOTION_HISTORY_LENGTH > 1 and len(motion_history) < MOTION_HISTORY_LENGTH):
-                contours, _ = cv2.findContours(motion, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                contours, _ = cv2.findContours(back_sub_thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
             largest_contour = None
             max_area = 0
