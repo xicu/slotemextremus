@@ -15,7 +15,7 @@ app = Flask(__name__)
 # === Config ===
 FRAME_WIDTH = 1280  # Capture width, native being 1536 for a pi cam 3
 FRAME_HEIGHT = 720  # Capture height, native being 864 for a pi cam 3
-FRAME_SCALING = 0.5 # Scaling ratio for processing efficiency
+FRAME_SCALING = 0.4 # Scaling ratio for processing efficiency
 FRAME_FPS = 60      # FPS target
 DUAL_STREAM_MODE = False
 DETECT_WHILE_TRACKING = False  # If True, will use detection while tracking. Contours will expand, but it will be CPU heavy and needs tweaking here and there!
@@ -24,7 +24,7 @@ LINE_X = 800                # X position of the detection line, in pixels
 MIN_Y = 0.20                # Minimum Y position of the detection line, in percentage
 MAX_Y = 0.85                # Maximum Y position of the detection line, in percentage
 WIDTH_OFFSET = 0.15         # Offset for the width of the detection line, in percentage, to mitigate detecting only fronts of the cars. The center of the bbox can't be in this area.
-MIN_COUNTOUR_AREA = 0.03    # Minimum area of contour to consider for tracking, in percentage of the frame size
+MIN_COUNTOUR_AREA = 0.02    # Minimum area of contour to consider for tracking, in percentage of the frame size
 
 # === Streaming quality ===
 STREAM_QUALITY = 35
@@ -38,7 +38,7 @@ new_tracker_type = None
 recalibrate_flag = False
 
 last_crossing_time = None
-MOTION_HISTORY_LENGTH = 5           # No history with <=1. CPU intensive. Reduces false positives. Brings tails to objects.
+MOTION_HISTORY_LENGTH = 1           # No history with <=1. CPU intensive. Reduces false positives. Brings tails to objects.
 CROSSING_FLASH_TIME = 0.4           # Seconds
 COOL_DOWN_TIME = 1.0                # Seconds
 TRACKING_TIMEOUT = 5.0              # Max time in the same tracker
@@ -56,6 +56,10 @@ last_status_result = {}
 tracker_start_time = None
 tracker_last_success_time = None
 last_bbox_in_subframe_coordinates = None
+
+# Meta crossing data
+meta_crossing_queue = queue.Queue(maxsize=0)
+
 
 # === Flask HTML Template ===
 HTML_PAGE = """
@@ -299,6 +303,11 @@ else:
 picam2.configure(config)
 picam2.start()
 
+
+
+#
+# MAIN FUNCTION
+#
 def capture_frames():
     global tracker, last_crossing_time
     global trigger_cooldown, recalibrate_flag
@@ -324,7 +333,7 @@ def capture_frames():
     # history: Number of frames to use for background modeling.
     # varThreshold: Higher = less sensitive to movement.
     # detectShadows: If True, shadows will be marked gray (127), not white (255).
-    back_sub = cv2.createBackgroundSubtractorKNN(history=100, dist2Threshold=400.0, detectShadows=DETECT_SHADOWS)
+    back_sub = cv2.createBackgroundSubtractorKNN(history=200, dist2Threshold=200.0, detectShadows=DETECT_SHADOWS)
 
     while True:
 
@@ -525,7 +534,8 @@ def capture_frames():
         #
 
         # Flash on detection
-        if last_crossing_time and abs(last_crossing_time - current_frame_time) < CROSSING_FLASH_TIME:
+        if (last_crossing_time and abs(last_crossing_time - current_frame_time) < CROSSING_FLASH_TIME and
+           last_crossing_time != current_frame_time):        # We save the last crossing time to avoid flashing on the same frame
             alpha = 1.0 - (abs(last_crossing_time - current_frame_time) / CROSSING_FLASH_TIME)
             overlay = np.full_like(current_frame, 255)  # White overlay
             cv2.addWeighted(overlay, alpha, current_frame, 1 - alpha, 0, current_frame)
@@ -584,7 +594,15 @@ def capture_frames():
 
 
         #
-        # STREAMING
+        # META CROSSING QUEUEING
+        #
+        if (last_crossing_time == current_frame_time):
+            meta_crossing_queue.put_nowait((current_frame_time, current_frame.copy()))
+
+
+
+        #
+        # STREAMING QUEUEING
         #
 #       Theoritecally correct, but slower        
 #        try:
@@ -597,13 +615,32 @@ def capture_frames():
         time.sleep(0.001)   # Avoid suffocating the CPU
 
 
+
+#
+# META PROCESSING
+#
+def processMetaCrossing():
+    global last_crossing_time
+    global trigger_cooldown
+
+    while True:
+        try:
+            meta_crossing_time, meta_crossing_frame = meta_crossing_queue.get(timeout=3)
+            readable_time = time.strftime("%Y%m%d_%H%M%S", time.localtime(meta_crossing_time))
+            cv2.imwrite(f"jpg/crossing_{readable_time}.jpg", meta_crossing_frame)
+            print(f"META THREAD: Meta crossing at: {readable_time}")
+        except queue.Empty:
+            continue
+        time.sleep(1)
+
+
+
 # === Flask Routes ===
 def generate_stream():
     try:
         while True:
-            current_time = time.time()
             try:
-                output_frame_copy = streaming_frame_queue.get(timeout=1)
+                output_frame_copy = streaming_frame_queue.get(timeout=3)
             except queue.Empty:
                 continue
 
@@ -739,4 +776,5 @@ def reset_autofocus_route():
 # === Start Threads ===
 if __name__ == '__main__':
     threading.Thread(target=capture_frames, daemon=True).start()
+    threading.Thread(target=processMetaCrossing, daemon=True).start()
     app.run(host='0.0.0.0', port=5000, threaded=True)
