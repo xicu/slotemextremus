@@ -479,11 +479,10 @@ def capture_frames():
             # thresh = cv2.dilate(thresh, None, iterations=2)                   # Optional cleaning up - removes noise
             # thresh = cv2.erode(thresh, None, iterations=1)                    # Optional: Erode to remove noise
 
-            # Remove noise and fill gaps
-            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-            # First: remove noise
+            # Remove noise
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
             back_sub_thresh = cv2.morphologyEx(back_sub_thresh, cv2.MORPH_OPEN, kernel)
-            # Then: close small holes inside objects
+            # Close small holes inside objects
             #thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
 
             # Motion detection (note that ==1 is dilation, and ==0 is nothing)
@@ -533,9 +532,13 @@ def capture_frames():
         # POST-PROCESSING
         #
 
-        # Flash on detection
-        if (last_crossing_time and abs(last_crossing_time - current_frame_time) < CROSSING_FLASH_TIME and
-           last_crossing_time != current_frame_time):        # We save the last crossing time to avoid flashing on the same frame
+        # Variable aggregation
+        curr_frame_time = time.time()
+        status_color = mode_colors.get(current_mode, (255, 255, 255))
+        meta_crossing = (last_crossing_time == current_frame_time)
+
+        # Flash on detection (but not on the same frame)
+        if (not meta_crossing and last_crossing_time and abs(last_crossing_time - current_frame_time) < CROSSING_FLASH_TIME):
             alpha = 1.0 - (abs(last_crossing_time - current_frame_time) / CROSSING_FLASH_TIME)
             overlay = np.full_like(current_frame, 255)  # White overlay
             cv2.addWeighted(overlay, alpha, current_frame, 1 - alpha, 0, current_frame)
@@ -551,9 +554,10 @@ def capture_frames():
             y_full_frame = int((last_bbox_in_subframe_coordinates[1]+min_y_px)/FRAME_SCALING)
             w_full_frame = int(last_bbox_in_subframe_coordinates[2]/FRAME_SCALING)
             h_full_frame = int(last_bbox_in_subframe_coordinates[3]/FRAME_SCALING)
-            cv2.rectangle(current_frame, (x_full_frame, y_full_frame), (x_full_frame + w_full_frame, y_full_frame + h_full_frame), (0, 255, 0), 2)
+            cv2.rectangle(current_frame, (x_full_frame, y_full_frame), (x_full_frame + w_full_frame, y_full_frame + h_full_frame), status_color, 2)
             cv2.putText(current_frame, "Movida", (x_full_frame, y_full_frame - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, status_color, 1)
+
 
 
         #
@@ -561,7 +565,6 @@ def capture_frames():
         #
 
         # Time and FPS calculation
-        curr_frame_time = time.time()
         frame_duration = curr_frame_time - prev_frame_time
         fps = 1.0 / frame_duration if frame_duration > 0 else 0.0
         prev_frame_time = curr_frame_time
@@ -588,16 +591,19 @@ def capture_frames():
             fps_temp_start = curr_frame_time
 
         # Display FPS on the frame
-        color = mode_colors.get(current_mode, (255, 255, 255))
         cv2.putText(current_frame, f"{fps_string}", (10, 50),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, color, 2)
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, status_color, 2)
+
+        # Display date and time
+        cv2.putText(current_frame, time.strftime("%Y/%m/%d %H:%M:%S"), (10, 100),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, status_color, 2)
 
 
         #
         # META CROSSING QUEUEING
         #
-        if (last_crossing_time == current_frame_time):
-            meta_crossing_queue.put_nowait((current_frame_time, current_frame.copy()))
+        if meta_crossing:
+            meta_crossing_queue.put_nowait((current_frame_time, current_frame.copy(), back_sub_thresh.copy()))
 
 
 
@@ -625,9 +631,10 @@ def processMetaCrossing():
 
     while True:
         try:
-            meta_crossing_time, meta_crossing_frame = meta_crossing_queue.get(timeout=3)
+            meta_crossing_time, meta_crossing_frame, meta_crossing_thres = meta_crossing_queue.get(timeout=3)
             readable_time = time.strftime("%Y%m%d_%H%M%S", time.localtime(meta_crossing_time))
             cv2.imwrite(f"jpg/crossing_{readable_time}.jpg", meta_crossing_frame)
+            cv2.imwrite(f"jpg/crossing_{readable_time}-thresh.jpg", meta_crossing_thres)
             print(f"META THREAD: Meta crossing at: {readable_time}")
         except queue.Empty:
             continue
