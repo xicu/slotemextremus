@@ -23,7 +23,7 @@ DETECT_WHILE_TRACKING = False  # If True, will use detection while tracking. Con
 LINE_X = 800                # X position of the detection line, in pixels
 MIN_Y = 0.20                # Minimum Y position of the detection line, in percentage
 MAX_Y = 0.85                # Maximum Y position of the detection line, in percentage
-WIDTH_OFFSET = 0.15         # Offset for the width of the detection line, in percentage, to mitigate detecting only fronts of the cars. The center of the bbox can't be in this area.
+WIDTH_OFFSET = 0.70         # Offset for the width of the detection line, in percentage, to mitigate detecting only fronts of the cars
 MIN_COUNTOUR_AREA = 0.02    # Minimum area of contour to consider for tracking, in percentage of the frame size
 
 # === Streaming quality ===
@@ -347,6 +347,8 @@ def capture_frames():
         scaled_frame_height = int(current_frame.shape[0] * FRAME_SCALING)
         min_y_px = int(scaled_frame_height * MIN_Y)
         max_y_px = int(scaled_frame_height * MAX_Y)
+        min_x_px = int(FRAME_SCALING * LINE_X * (1.0 - WIDTH_OFFSET))
+        max_x_px = FRAME_SCALING * LINE_X + int(WIDTH_OFFSET * (scaled_frame_width - FRAME_SCALING * LINE_X))
         min_accepted_area = int(scaled_frame_width * scaled_frame_height * MIN_COUNTOUR_AREA)
 
         # Resize and crop for processing
@@ -355,16 +357,16 @@ def capture_frames():
             current_subframe_gray = current_frame_resized[min_y_px:max_y_px, :scaled_frame_width]
 
         else:
-            # Blur the image before resizing to clean some noise
-            # blurred_image = cv2.GaussianBlur(image, (5, 5), 0)
+            # Blur the image before resizing to clean some noise, as it comes from high frame rate video
+            blurred_image = cv2.GaussianBlur(current_frame, (5, 5), 0)
             # Resize frame
             current_frame_resized = cv2.resize(
-                current_frame,
+                blurred_image,
                 (
                     scaled_frame_width,
                     scaled_frame_height
                 ),
-                interpolation=cv2.INTER_LINEAR  # INTER_AREA gives more quality
+                interpolation=cv2.INTER_LINEAR  # INTER_AREA gives more quality, but we don't need it
             )
 
             # Convert to grayscale
@@ -489,10 +491,10 @@ def capture_frames():
             if DETECT_SHADOWS:  # Removes shadows (if detectShadows=True)
                 back_sub_thresh = cv2.threshold(back_sub_thresh, 200, 255, cv2.THRESH_BINARY)[1]
             kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-            back_sub_thresh = cv2.morphologyEx(back_sub_thresh, cv2.MORPH_OPEN, kernel)    # Combines erosion & dilation
-            back_sub_thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)            # Combines dilation & erosion
-            # back_sub_thresh = cv2.dilate(back_sub_thresh, None, iterations=2)            # Removes noise
-            # back_sub_thresh = cv2.erode(back_sub_thresh, None, iterations=1)             # Erode to remove noise
+            # back_sub_thresh = cv2.morphologyEx(back_sub_thresh, cv2.MORPH_OPEN, kernel)   # Combines erosion & dilation
+            back_sub_thresh = cv2.morphologyEx(back_sub_thresh, cv2.MORPH_CLOSE, kernel)  # Combines dilation & erosion
+            # back_sub_thresh = cv2.dilate(back_sub_thresh, None, iterations=2)             # Removes noise
+            # back_sub_thresh = cv2.erode(back_sub_thresh, None, iterations=1)              # Erode to remove noise
 
             # Optional motion detection
             if MOTION_HISTORY_LENGTH > 1:
@@ -511,13 +513,13 @@ def capture_frames():
             largest_contour = None
             max_area = 0
             for c in contours:
-                area = cv2.contourArea(c)
                 bbox = cv2.boundingRect(c)
+                area = bbox_area(bbox)
 
                 if (area > max_area and                                                         # Getting the largest contour
                     area > min_accepted_area and                                                # Min area requirement
-                    (bbox[1]+bbox[2]) > (current_frame_resized.shape[1] * WIDTH_OFFSET) and     # Not too close to the left edge
-                    bbox[0] < current_frame_resized.shape[1] * (1.0-WIDTH_OFFSET)):             # Not too close to the right edge
+                    (bbox[1]+bbox[2]) > min_x_px and                                            # Not too close to the left edge
+                    bbox[0] < max_x_px):                                                        # Not too close to the right edge
                     largest_contour = c
                     max_area = area
 
@@ -551,9 +553,11 @@ def capture_frames():
             cv2.addWeighted(overlay, alpha, current_frame, 1 - alpha, 0, current_frame)
 
         # Lines
+        cv2.line(current_frame, (LINE_X, int(FRAME_HEIGHT*MIN_Y)), (LINE_X, int(FRAME_HEIGHT*MAX_Y)), (0, 255, 0), 2)
         cv2.line(current_frame, (0, int(FRAME_HEIGHT*MIN_Y)), (FRAME_WIDTH, int(FRAME_HEIGHT*MIN_Y)), (0, 0, 255), 2)
         cv2.line(current_frame, (0, int(FRAME_HEIGHT*MAX_Y)), (FRAME_WIDTH, int(FRAME_HEIGHT*MAX_Y)), (0, 0, 255), 2)
-        cv2.line(current_frame, (LINE_X, int(FRAME_HEIGHT*MIN_Y)), (LINE_X, int(FRAME_HEIGHT*MAX_Y)), (0, 255, 0), 2)
+        cv2.line(current_frame, (int(min_x_px/FRAME_SCALING), int(FRAME_HEIGHT*MIN_Y)), (int(min_x_px/FRAME_SCALING), int(FRAME_HEIGHT*MAX_Y)), (0, 0, 255), 2)
+        cv2.line(current_frame, (int(max_x_px/FRAME_SCALING), int(FRAME_HEIGHT*MIN_Y)), (int(max_x_px/FRAME_SCALING), int(FRAME_HEIGHT*MAX_Y)), (0, 0, 255), 2)
 
         # Bounding box
         if last_bbox_in_subframe_coordinates:
