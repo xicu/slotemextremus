@@ -355,6 +355,8 @@ def capture_frames():
             current_subframe_gray = current_frame_resized[min_y_px:max_y_px, :scaled_frame_width]
 
         else:
+            # Blur the image before resizing to clean some noise
+            # blurred_image = cv2.GaussianBlur(image, (5, 5), 0)
             # Resize frame
             current_frame_resized = cv2.resize(
                 current_frame,
@@ -371,8 +373,6 @@ def capture_frames():
             # Crop vertically
             current_subframe_gray = current_subframe_gray[min_y_px:max_y_px, :]
 
-        # Feed the background substractor
-        back_sub_thresh = back_sub.apply(current_subframe_gray)
 
 
         #
@@ -402,16 +402,27 @@ def capture_frames():
             last_bbox_in_subframe_coordinates = None
             new_tracker_type = None
 
-        if current_mode == SystemMode.COOL_DOWN and current_frame_time >= cooldown_until:
-            current_mode = SystemMode.DETECTING
-            print(">>> DETECTING mode after COOL_DOWN finished")
+
+
+        #
+        # COOL DOWN
+        #
+
+        if current_mode == SystemMode.COOL_DOWN:
+            # Feed the background substractor (only in cool down and in detection - tracking would polute it)
+            back_sub_thresh = back_sub.apply(current_subframe_gray)
+
+            if current_frame_time >= cooldown_until:
+                current_mode = SystemMode.DETECTING
+                print(">>> DETECTING mode after COOL_DOWN finished")
+
 
 
         #
         # TRACKING
         #
 
-        if current_mode == SystemMode.TRACKING:
+        elif current_mode == SystemMode.TRACKING:
             # Check if the tracker has been active for too long
             if tracker_start_time and current_frame_time - tracker_start_time > TRACKING_TIMEOUT:
                 current_mode = SystemMode.COOL_DOWN
@@ -471,21 +482,19 @@ def capture_frames():
 #            frame_delta = cv2.absdiff(blur, cv2.convertScaleAbs(init_tracker.avg))
 #            thresh = cv2.threshold(frame_delta, 15, 255, cv2.THRESH_BINARY)[1]
 
-            # Background subtraction
+            # Feed the background substractor (only in cool down and in detection - tracking would polute it)
             back_sub_thresh = back_sub.apply(current_subframe_gray)
+
+            # Clean the background
             if DETECT_SHADOWS:  # Removes shadows (if detectShadows=True)
                 back_sub_thresh = cv2.threshold(back_sub_thresh, 200, 255, cv2.THRESH_BINARY)[1]
-
-            # thresh = cv2.dilate(thresh, None, iterations=2)                   # Optional cleaning up - removes noise
-            # thresh = cv2.erode(thresh, None, iterations=1)                    # Optional: Erode to remove noise
-
-            # Remove noise
             kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-            back_sub_thresh = cv2.morphologyEx(back_sub_thresh, cv2.MORPH_OPEN, kernel)
-            # Close small holes inside objects
-            #thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+            back_sub_thresh = cv2.morphologyEx(back_sub_thresh, cv2.MORPH_OPEN, kernel)    # Combines erosion & dilation
+            back_sub_thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)            # Combines dilation & erosion
+            # back_sub_thresh = cv2.dilate(back_sub_thresh, None, iterations=2)            # Removes noise
+            # back_sub_thresh = cv2.erode(back_sub_thresh, None, iterations=1)             # Erode to remove noise
 
-            # Motion detection (note that ==1 is dilation, and ==0 is nothing)
+            # Optional motion detection
             if MOTION_HISTORY_LENGTH > 1:
                 if current_mode != SystemMode.TRACKING:  # Do NOT update motion history if we're in TRACKING mode (when combining tracking and detection)
                     motion_history.append(back_sub_thresh.copy())
@@ -493,8 +502,6 @@ def capture_frames():
                     motion_history.pop(0)
                 # Combine all motion masks
                 back_sub_thresh = np.bitwise_or.reduce(motion_history)
-            elif MOTION_HISTORY_LENGTH == 1:
-                back_sub_thresh = cv2.dilate(back_sub_thresh, None, iterations=2)
 
             # Find contours only when we're not waiting for the motion history to build up
             contours = []
