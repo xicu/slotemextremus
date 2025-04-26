@@ -7,6 +7,7 @@ from picamera2 import Picamera2
 import time
 import psutil
 import subprocess
+import requests
 from enum import Enum, auto
 
 
@@ -57,8 +58,11 @@ tracker_start_time = None
 tracker_last_success_time = None
 last_bbox_in_subframe_coordinates = None
 
-# Meta crossing data
+# Meta crossing queue, holding the last frame with a crossing and lots of additional data
 meta_crossing_queue = queue.Queue(maxsize=0)
+
+# Queue with the list of pending events to be sent to the server
+pending_events_queue = queue.Queue(maxsize=0)
 
 
 # === Flask HTML Template ===
@@ -630,19 +634,51 @@ def capture_frames():
 # META PROCESSING
 #
 def processMetaCrossing():
-    global last_crossing_time
-    global trigger_cooldown
-
     while True:
         try:
             meta_crossing_time, meta_crossing_frame, meta_crossing_thres = meta_crossing_queue.get(timeout=3)
             readable_time = time.strftime("%Y%m%d_%H%M%S", time.localtime(meta_crossing_time))
+            print(f"META THREAD: Meta crossing at: {readable_time}")
             cv2.imwrite(f"jpg/crossing_{readable_time}.jpg", meta_crossing_frame)
             cv2.imwrite(f"jpg/crossing_{readable_time}-thresh.jpg", meta_crossing_thres)
-            print(f"META THREAD: Meta crossing at: {readable_time}")
+
+            _, jpg_bytes = cv2.imencode('.jpg', meta_crossing_frame)
+            jpg_bytes = jpg_bytes.tobytes()
+            _, jpg_bytes_thres = cv2.imencode('.jpg', meta_crossing_thres)
+            jpg_bytes_thres = jpg_bytes_thres.tobytes()
+            pending_events_queue.put_nowait((meta_crossing_time, jpg_bytes, jpg_bytes_thres)) 
+
         except queue.Empty:
             continue
-        time.sleep(1)
+
+        time.sleep(0.001)   # Mostly unneeded, but just in case
+
+
+
+def publishEvents():
+    while True:
+        try:
+            meta_crossing_time, meta_crossing_frame_bytes, meta_crossing_thres_bytes = pending_events_queue.get(timeout=3)
+            readable_time = time.strftime("%Y%m%d_%H%M%S", time.localtime(meta_crossing_time))
+            print(f"EVENTS THREAD: Processing crossing at: {readable_time}")
+        except queue.Empty:
+            continue
+
+        try:
+            files = {'image': ('lap.jpg', meta_crossing_frame_bytes, 'image/jpeg')}
+            response = requests.post("http://192.168.50.166:8080/lap/42",
+                                     data={"time": readable_time},
+                                     files=files)
+            response.raise_for_status()
+            print("✅ Success:", response.status_code)
+            print("📄 Response text:", response.text)
+        except requests.RequestException as e:
+            print("❌ Error posting event:", e)
+            if response is not None:
+                print("🛠 Response status code:", response.status_code)
+                print("📝 Response body:", response.text)
+
+        time.sleep(0.001)   # Mostly unneeded, but just in case
 
 
 
@@ -788,4 +824,5 @@ def reset_autofocus_route():
 if __name__ == '__main__':
     threading.Thread(target=capture_frames, daemon=True).start()
     threading.Thread(target=processMetaCrossing, daemon=True).start()
+    threading.Thread(target=publishEvents, daemon=True).start()
     app.run(host='0.0.0.0', port=5000, threaded=True)
