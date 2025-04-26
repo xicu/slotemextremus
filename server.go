@@ -2,9 +2,14 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
@@ -67,18 +72,66 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 func handlePost(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	id := vars["id"]
+	timeStr := r.FormValue("time") // from the "data" field in Python
 
+	// Save all the images (up to 32MB)
+	err := r.ParseMultipartForm(32 << 20)
+	if err != nil {
+		http.Error(w, "Bad form data", http.StatusBadRequest)
+		return
+	}
+	files := r.MultipartForm.File["image"]
+	err = saveUploadedImages(id, files)
+	if err != nil {
+		http.Error(w, "Failed to save images", http.StatusInternalServerError)
+		return
+	}
+
+	// Broadcast ID (or include time if you want)
 	connections.RLock()
 	defer connections.RUnlock()
-
-	// Broadcast to all WebSocket connections
 	for conn := range connections.conns {
-		if err := conn.WriteMessage(websocket.TextMessage, []byte(id)); err != nil {
-			log.Printf("Failed to send to WebSocket: %v", err)
+		msg := fmt.Sprintf("Car %s crossed at %s", id, timeStr)
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(msg)); err != nil {
+			log.Printf("WebSocket send error: %v", err)
 			conn.Close()
 		}
 	}
 
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, "Broadcasted '%s' to %d clients", id, len(connections.conns))
+	fmt.Fprintf(w, "Broadcasted '%s' at '%s' to %d clients", id, timeStr, len(connections.conns))
+}
+
+func saveUploadedImages(id string, files []*multipart.FileHeader) error {
+	// Create a local temp folder like ./tmp/
+	baseDir := "tmp"
+	err := os.MkdirAll(baseDir, os.ModePerm)
+	if err != nil {
+		return err
+	}
+
+	for _, header := range files {
+		file, err := header.Open()
+		if err != nil {
+			log.Printf("Error opening file: %v", err)
+			continue
+		}
+		defer file.Close()
+
+		// Use timestamp to avoid name collisions
+		timestamp := time.Now().Format("20060102_150405.000")
+		filename := fmt.Sprintf("%s_%s", timestamp, header.Filename)
+		savePath := filepath.Join(baseDir, filename)
+
+		out, err := os.Create(savePath)
+		if err != nil {
+			log.Printf("Error creating file: %v", err)
+			continue
+		}
+		defer out.Close()
+
+		io.Copy(out, file)
+		log.Printf("Saved file to %s", savePath)
+	}
+	return nil
 }
