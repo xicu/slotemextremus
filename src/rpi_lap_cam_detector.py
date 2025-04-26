@@ -323,6 +323,8 @@ def capture_frames():
 
     print(">>> COOL_DOWN mode set to start")
     trigger_cooldown = True
+    curr_mode = SystemMode.COOL_DOWN
+
 
     motion_history = []
 
@@ -333,7 +335,7 @@ def capture_frames():
     # history: Number of frames to use for background modeling.
     # varThreshold: Higher = less sensitive to movement.
     # detectShadows: If True, shadows will be marked gray (127), not white (255).
-    back_sub = cv2.createBackgroundSubtractorKNN(history=200, dist2Threshold=200.0, detectShadows=DETECT_SHADOWS)
+    background = cv2.createBackgroundSubtractorKNN(history=200, dist2Threshold=200.0, detectShadows=DETECT_SHADOWS)
 
     while True:
 
@@ -341,39 +343,46 @@ def capture_frames():
         # FRAME ACQUISITION
         #
 
-        current_frame_time = time.time()
-        current_frame = picam2.capture_array("main")
-        scaled_frame_width = int(current_frame.shape[1] * FRAME_SCALING)
-        scaled_frame_height = int(current_frame.shape[0] * FRAME_SCALING)
-        min_y_px = int(scaled_frame_height * MIN_Y)
-        max_y_px = int(scaled_frame_height * MAX_Y)
+        curr_frame_time = time.time()
+        curr_frame = picam2.capture_array("main")
+        curr_scaled_frame_width = int(curr_frame.shape[1] * FRAME_SCALING)
+        curr_scaled_frame_height = int(curr_frame.shape[0] * FRAME_SCALING)
+        min_y_px = int(curr_scaled_frame_height * MIN_Y)
+        max_y_px = int(curr_scaled_frame_height * MAX_Y)
         min_x_px = int(FRAME_SCALING * LINE_X * (1.0 - WIDTH_OFFSET))
-        max_x_px = FRAME_SCALING * LINE_X + int(WIDTH_OFFSET * (scaled_frame_width - FRAME_SCALING * LINE_X))
-        min_accepted_area = int(scaled_frame_width * scaled_frame_height * MIN_COUNTOUR_AREA)
+        max_x_px = FRAME_SCALING * LINE_X + int(WIDTH_OFFSET * (curr_scaled_frame_width - FRAME_SCALING * LINE_X))
+        min_accepted_area = int(curr_scaled_frame_width * curr_scaled_frame_height * MIN_COUNTOUR_AREA)
+
 
         # Resize and crop for processing
         if DUAL_STREAM_MODE:
             current_frame_resized = picam2.capture_array("lores")
-            current_subframe_gray = current_frame_resized[min_y_px:max_y_px, :scaled_frame_width]
+            curr_subframe_gray = current_frame_resized[min_y_px:max_y_px, :curr_scaled_frame_width]
 
         else:
             # Blur the image before resizing to clean some noise, as it comes from high frame rate video
-            blurred_image = cv2.GaussianBlur(current_frame, (5, 5), 0)
+            blurred_image = cv2.GaussianBlur(curr_frame, (5, 5), 0)
             # Resize frame
             current_frame_resized = cv2.resize(
                 blurred_image,
                 (
-                    scaled_frame_width,
-                    scaled_frame_height
+                    curr_scaled_frame_width,
+                    curr_scaled_frame_height
                 ),
                 interpolation=cv2.INTER_LINEAR  # INTER_AREA gives more quality, but we don't need it
             )
 
             # Convert to grayscale
-            current_subframe_gray = cv2.cvtColor(current_frame_resized, cv2.COLOR_BGR2GRAY)
+            curr_subframe_gray = cv2.cvtColor(current_frame_resized, cv2.COLOR_BGR2GRAY)
 
             # Crop vertically
-            current_subframe_gray = current_subframe_gray[min_y_px:max_y_px, :]
+            curr_subframe_gray = curr_subframe_gray[min_y_px:max_y_px, :]
+
+        curr_subframe_height, curr_subframe_width = curr_subframe_gray.shape[:2]
+
+        # Feed the background substractor (not in tracking - tracking would polute the background))
+        if curr_mode != SystemMode.TRACKING:
+            curr_background_thresh = background.apply(curr_subframe_gray)
 
 
 
@@ -383,8 +392,8 @@ def capture_frames():
 
         if trigger_cooldown:
             motion_history.clear()
-            current_mode = SystemMode.COOL_DOWN
-            cooldown_until = current_frame_time + COOL_DOWN_TIME
+            curr_mode = SystemMode.COOL_DOWN
+            cooldown_until = curr_frame_time + COOL_DOWN_TIME
             tracker = None
             tracker_start_time = None
             last_bbox_in_subframe_coordinates = None
@@ -392,7 +401,7 @@ def capture_frames():
             trigger_cooldown = False
 
         if recalibrate_flag:        ### NOT NEEDED - KEPT AS PLACEHOLDER FOR ANOTHER BUTTON
-            back_sub = cv2.createBackgroundSubtractorKNN(history=100, dist2Threshold=400.0, detectShadows=DETECT_SHADOWS)
+            background = cv2.createBackgroundSubtractorKNN(history=100, dist2Threshold=400.0, detectShadows=DETECT_SHADOWS)
             trigger_cooldown = True
             recalibrate_flag = False
             continue
@@ -410,12 +419,9 @@ def capture_frames():
         # COOL DOWN
         #
 
-        if current_mode == SystemMode.COOL_DOWN:
-            # Feed the background substractor (only in cool down and in detection - tracking would polute it)
-            back_sub_thresh = back_sub.apply(current_subframe_gray)
-
-            if current_frame_time >= cooldown_until:
-                current_mode = SystemMode.DETECTING
+        if curr_mode == SystemMode.COOL_DOWN:
+            if curr_frame_time >= cooldown_until:
+                curr_mode = SystemMode.DETECTING
                 print(">>> DETECTING mode after COOL_DOWN finished")
 
 
@@ -424,20 +430,18 @@ def capture_frames():
         # TRACKING
         #
 
-        elif current_mode == SystemMode.TRACKING:
+        elif curr_mode == SystemMode.TRACKING:
             # Check if the tracker has been active for too long
-            if tracker_start_time and current_frame_time - tracker_start_time > TRACKING_TIMEOUT:
-                current_mode = SystemMode.COOL_DOWN
+            if tracker_start_time and curr_frame_time - tracker_start_time > TRACKING_TIMEOUT:
                 print(">>> TRACKING -> COOL_DOWN mode after tracker timeout")
                 trigger_cooldown = True
                 continue
 
-            success, new_bbox = tracker.update(current_subframe_gray)
+            success, new_bbox = tracker.update(curr_subframe_gray)
             if success:
                 # Check if object has left the visible frame
                 center_x, center_y = bbox_center(new_bbox)
-                frame_height, frame_width = current_subframe_gray.shape[:2]
-                if not (0 <= center_x < frame_width and 0 <= center_y < frame_height):
+                if not (0 <= center_x < curr_subframe_width and 0 <= center_y < curr_subframe_height):
                     print(">>> TRACKING -> COOL_DOWN mode after object left the frame")
                     trigger_cooldown = True
                     continue
@@ -449,21 +453,21 @@ def capture_frames():
                     new_x1 = new_bbox[0]
                     new_x2 = new_x1 + new_bbox[2]
                     if prev_x2 < LINE_X * FRAME_SCALING and new_x2 >= LINE_X * FRAME_SCALING:
-                        last_crossing_time = current_frame_time
-                        tracker_start_time = current_frame_time         # Extend the TTL of the tracker
+                        last_crossing_time = curr_frame_time
+                        tracker_start_time = curr_frame_time         # Extend the TTL of the tracker
                         print(f"--> CROSSING from LEFT to RIGHT")
                     elif prev_x1 > LINE_X * FRAME_SCALING and new_x1 <= LINE_X * FRAME_SCALING:
-                        last_crossing_time = current_frame_time
-                        tracker_start_time = current_frame_time         # Extend the TTL of the tracker
+                        last_crossing_time = curr_frame_time
+                        tracker_start_time = curr_frame_time         # Extend the TTL of the tracker
                         print(f"--> CROSSING from RIGHT to LEFT")
 
                 last_bbox_in_subframe_coordinates = new_bbox
-                tracker_last_success_time = current_frame_time
+                tracker_last_success_time = curr_frame_time
 
             else:
                 # Tracking failed
-                if tracker_last_success_time and current_frame_time - tracker_last_success_time > TRACKING_RESILIENCE_LIMIT:
-                    current_mode = SystemMode.DETECTING
+                if tracker_last_success_time and curr_frame_time - tracker_last_success_time > TRACKING_RESILIENCE_LIMIT:
+                    curr_mode = SystemMode.DETECTING
                     print(">>> TRACKING -> DETECTING mode after tracking resilience limit exceeded")
                     tracker = None
                     tracker_start_time = None
@@ -474,41 +478,30 @@ def capture_frames():
         # DETECTION
         #
 
-        if current_mode == SystemMode.DETECTING or (DETECT_WHILE_TRACKING and current_mode == SystemMode.TRACKING):
-
-            # Manual background subtraction
-#            blur = cv2.GaussianBlur(current_subframe_gray, (21, 21), 0)
-#            if not hasattr(init_tracker, 'avg'):
-#                init_tracker.avg = blur.copy().astype("float")
-#            cv2.accumulateWeighted(blur, init_tracker.avg, 0.2)
-#            frame_delta = cv2.absdiff(blur, cv2.convertScaleAbs(init_tracker.avg))
-#            thresh = cv2.threshold(frame_delta, 15, 255, cv2.THRESH_BINARY)[1]
-
-            # Feed the background substractor (only in cool down and in detection - tracking would polute it)
-            back_sub_thresh = back_sub.apply(current_subframe_gray)
+        if curr_mode == SystemMode.DETECTING or (DETECT_WHILE_TRACKING and curr_mode == SystemMode.TRACKING):
 
             # Clean the background
             if DETECT_SHADOWS:  # Removes shadows (if detectShadows=True)
-                back_sub_thresh = cv2.threshold(back_sub_thresh, 200, 255, cv2.THRESH_BINARY)[1]
+                curr_background_thresh = cv2.threshold(curr_background_thresh, 200, 255, cv2.THRESH_BINARY)[1]
             kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
             # back_sub_thresh = cv2.morphologyEx(back_sub_thresh, cv2.MORPH_OPEN, kernel)   # Combines erosion & dilation
-            back_sub_thresh = cv2.morphologyEx(back_sub_thresh, cv2.MORPH_CLOSE, kernel)  # Combines dilation & erosion
+            curr_background_thresh = cv2.morphologyEx(curr_background_thresh, cv2.MORPH_CLOSE, kernel)  # Combines dilation & erosion
             # back_sub_thresh = cv2.dilate(back_sub_thresh, None, iterations=2)             # Removes noise
             # back_sub_thresh = cv2.erode(back_sub_thresh, None, iterations=1)              # Erode to remove noise
 
             # Optional motion detection
             if MOTION_HISTORY_LENGTH > 1:
-                if current_mode != SystemMode.TRACKING:  # Do NOT update motion history if we're in TRACKING mode (when combining tracking and detection)
-                    motion_history.append(back_sub_thresh.copy())
+                if curr_mode != SystemMode.TRACKING:  # Do NOT update motion history if we're in TRACKING mode (when combining tracking and detection)
+                    motion_history.append(curr_background_thresh.copy())
                 if len(motion_history) > MOTION_HISTORY_LENGTH:
                     motion_history.pop(0)
                 # Combine all motion masks
-                back_sub_thresh = np.bitwise_or.reduce(motion_history)
+                curr_background_thresh = np.bitwise_or.reduce(motion_history)
 
             # Find contours only when we're not waiting for the motion history to build up
             contours = []
             if not (MOTION_HISTORY_LENGTH > 1 and len(motion_history) < MOTION_HISTORY_LENGTH):
-                contours, _ = cv2.findContours(back_sub_thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                contours, _ = cv2.findContours(curr_background_thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
             largest_contour = None
             max_area = 0
@@ -527,10 +520,10 @@ def capture_frames():
             if max_area > 0 and max_area >= bbox_area(last_bbox_in_subframe_coordinates):
                 try:
                     last_bbox_in_subframe_coordinates = cv2.boundingRect(largest_contour)
-                    tracker = init_tracker(current_subframe_gray, last_bbox_in_subframe_coordinates)
-                    tracker_start_time = current_frame_time
-                    tracker_last_success_time = current_frame_time
-                    current_mode = SystemMode.TRACKING
+                    tracker = init_tracker(curr_subframe_gray, last_bbox_in_subframe_coordinates)
+                    tracker_start_time = curr_frame_time
+                    tracker_last_success_time = curr_frame_time
+                    curr_mode = SystemMode.TRACKING
                     print(">>> DETECTION -> TRACKING mode with the largest contour found")
                 except Exception as e:
                     last_bbox_in_subframe_coordinates = None
@@ -538,47 +531,16 @@ def capture_frames():
 
 
         #
-        # POST-PROCESSING
+        # STATS
         #
 
         # Variable aggregation
-        curr_frame_time = time.time()
-        status_color = mode_colors.get(current_mode, (255, 255, 255))
-        meta_crossing = (last_crossing_time == current_frame_time)
-
-        # Flash on detection (but not on the same frame)
-        if (not meta_crossing and last_crossing_time and abs(last_crossing_time - current_frame_time) < CROSSING_FLASH_TIME):
-            alpha = 1.0 - (abs(last_crossing_time - current_frame_time) / CROSSING_FLASH_TIME)
-            overlay = np.full_like(current_frame, 255)  # White overlay
-            cv2.addWeighted(overlay, alpha, current_frame, 1 - alpha, 0, current_frame)
-
-        # Lines
-        cv2.line(current_frame, (LINE_X, int(FRAME_HEIGHT*MIN_Y)), (LINE_X, int(FRAME_HEIGHT*MAX_Y)), (0, 255, 0), 2)
-        cv2.line(current_frame, (0, int(FRAME_HEIGHT*MIN_Y)), (FRAME_WIDTH, int(FRAME_HEIGHT*MIN_Y)), (0, 0, 255), 2)
-        cv2.line(current_frame, (0, int(FRAME_HEIGHT*MAX_Y)), (FRAME_WIDTH, int(FRAME_HEIGHT*MAX_Y)), (0, 0, 255), 2)
-        cv2.line(current_frame, (int(min_x_px/FRAME_SCALING), int(FRAME_HEIGHT*MIN_Y)), (int(min_x_px/FRAME_SCALING), int(FRAME_HEIGHT*MAX_Y)), (0, 0, 255), 2)
-        cv2.line(current_frame, (int(max_x_px/FRAME_SCALING), int(FRAME_HEIGHT*MIN_Y)), (int(max_x_px/FRAME_SCALING), int(FRAME_HEIGHT*MAX_Y)), (0, 0, 255), 2)
-
-        # Bounding box
-        if last_bbox_in_subframe_coordinates:
-            x_full_frame = int(last_bbox_in_subframe_coordinates[0]/FRAME_SCALING)
-            y_full_frame = int((last_bbox_in_subframe_coordinates[1]+min_y_px)/FRAME_SCALING)
-            w_full_frame = int(last_bbox_in_subframe_coordinates[2]/FRAME_SCALING)
-            h_full_frame = int(last_bbox_in_subframe_coordinates[3]/FRAME_SCALING)
-            cv2.rectangle(current_frame, (x_full_frame, y_full_frame), (x_full_frame + w_full_frame, y_full_frame + h_full_frame), status_color, 2)
-            cv2.putText(current_frame, "Movida", (x_full_frame, y_full_frame - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, status_color, 1)
-
-
-
-        #
-        # STATS
-        #
+        status_color = mode_colors.get(curr_mode, (255, 255, 255))
+        meta_crossing = (last_crossing_time == curr_frame_time)
 
         # Time and FPS calculation
         frame_duration = curr_frame_time - prev_frame_time
         fps = 1.0 / frame_duration if frame_duration > 0 else 0.0
-        prev_frame_time = curr_frame_time
 
         # Stats accumulation
         fps_temp_counter += 1
@@ -601,21 +563,49 @@ def capture_frames():
             fps_temp_slowest_frame = 0
             fps_temp_start = curr_frame_time
 
-        # Display FPS on the frame
-        cv2.putText(current_frame, f"{fps_string}", (10, 50),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, status_color, 2)
 
-        # Display date and time
-        cv2.putText(current_frame, time.strftime("%Y/%m/%d %H:%M:%S"), (10, 100),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, status_color, 2)
+        #
+        # IMAGE POST-PROCESSING (WHEN NEEDED)
+        #
+
+        if (meta_crossing or fps_temp_counter % STREAM_EVERY_X_FRAMES == 0):
+            # Display FPS on the frame
+            cv2.putText(curr_frame, f"{fps_string}", (10, 50),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, status_color, 2)
+
+            # Display date and time
+            cv2.putText(curr_frame, time.strftime("%Y/%m/%d %H:%M:%S"), (10, 100),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, status_color, 2)
+
+            # Flash on detection (but not on the same frame)
+            if (not meta_crossing and last_crossing_time and abs(last_crossing_time - curr_frame_time) < CROSSING_FLASH_TIME):
+                alpha = 1.0 - (abs(last_crossing_time - curr_frame_time) / CROSSING_FLASH_TIME)
+                overlay = np.full_like(curr_frame, 255)  # White overlay
+                cv2.addWeighted(overlay, alpha, curr_frame, 1 - alpha, 0, curr_frame)
+
+            # Lines
+            cv2.line(curr_frame, (LINE_X, int(FRAME_HEIGHT*MIN_Y)), (LINE_X, int(FRAME_HEIGHT*MAX_Y)), (0, 255, 0), 2)
+            cv2.line(curr_frame, (0, int(FRAME_HEIGHT*MIN_Y)), (FRAME_WIDTH, int(FRAME_HEIGHT*MIN_Y)), (0, 0, 255), 2)
+            cv2.line(curr_frame, (0, int(FRAME_HEIGHT*MAX_Y)), (FRAME_WIDTH, int(FRAME_HEIGHT*MAX_Y)), (0, 0, 255), 2)
+            cv2.line(curr_frame, (int(min_x_px/FRAME_SCALING), int(FRAME_HEIGHT*MIN_Y)), (int(min_x_px/FRAME_SCALING), int(FRAME_HEIGHT*MAX_Y)), (0, 0, 255), 2)
+            cv2.line(curr_frame, (int(max_x_px/FRAME_SCALING), int(FRAME_HEIGHT*MIN_Y)), (int(max_x_px/FRAME_SCALING), int(FRAME_HEIGHT*MAX_Y)), (0, 0, 255), 2)
+
+            # Bounding box
+            if last_bbox_in_subframe_coordinates:
+                x_full_frame = int(last_bbox_in_subframe_coordinates[0]/FRAME_SCALING)
+                y_full_frame = int((last_bbox_in_subframe_coordinates[1]+min_y_px)/FRAME_SCALING)
+                w_full_frame = int(last_bbox_in_subframe_coordinates[2]/FRAME_SCALING)
+                h_full_frame = int(last_bbox_in_subframe_coordinates[3]/FRAME_SCALING)
+                cv2.rectangle(curr_frame, (x_full_frame, y_full_frame), (x_full_frame + w_full_frame, y_full_frame + h_full_frame), status_color, 2)
+                cv2.putText(curr_frame, "Movida", (x_full_frame, y_full_frame - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, status_color, 1)
 
 
         #
         # META CROSSING QUEUEING
         #
         if meta_crossing:
-            meta_crossing_queue.put_nowait((current_frame_time, current_frame.copy(), back_sub_thresh.copy()))
-
+            meta_crossing_queue.put_nowait((curr_frame_time, curr_frame.copy(), curr_background_thresh.copy()))
 
 
         #
@@ -627,8 +617,11 @@ def capture_frames():
 #        except queue.Full:
 #            pass  # just skip, or log dropped frames
         if STREAM_EVERY_X_FRAMES > 1 and fps_temp_counter % STREAM_EVERY_X_FRAMES == 0 and not streaming_frame_queue.full():
-            streaming_frame_queue.put_nowait(current_frame.copy())
+            streaming_frame_queue.put_nowait(curr_frame.copy())
 
+
+        # ...and loop!
+        prev_frame_time = curr_frame_time
         time.sleep(0.001)   # Avoid suffocating the CPU
 
 
