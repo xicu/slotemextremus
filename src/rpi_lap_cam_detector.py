@@ -639,9 +639,8 @@ def processMetaCrossing():
             meta_crossing_time, meta_crossing_frame, meta_crossing_thres = meta_crossing_queue.get(timeout=3)
             readable_time = time.strftime("%Y%m%d_%H%M%S", time.localtime(meta_crossing_time))
             print(f"META THREAD: Meta crossing at: {readable_time}")
-            cv2.imwrite(f"jpg/crossing_{readable_time}.jpg", meta_crossing_frame)
-            cv2.imwrite(f"jpg/crossing_{readable_time}-thresh.jpg", meta_crossing_thres)
-
+            # cv2.imwrite(f"jpg/crossing_{readable_time}.jpg", meta_crossing_frame)
+            # cv2.imwrite(f"jpg/crossing_{readable_time}-thresh.jpg", meta_crossing_thres)
             _, jpg_bytes = cv2.imencode('.jpg', meta_crossing_frame)
             jpg_bytes = jpg_bytes.tobytes()
             _, jpg_bytes_thres = cv2.imencode('.jpg', meta_crossing_thres)
@@ -651,7 +650,7 @@ def processMetaCrossing():
         except queue.Empty:
             continue
 
-        time.sleep(0.001)   # Mostly unneeded, but just in case
+        time.sleep(0.1)   # Mostly unneeded, but just in case
 
 
 
@@ -664,23 +663,35 @@ def publishEvents():
         except queue.Empty:
             continue
 
-        try:
+        files = [
+            ('image', ('frame.jpg', meta_crossing_frame_bytes, 'image/jpeg')),
+            ('image', ('thres.jpg', meta_crossing_thres_bytes, 'image/jpeg')),
+        ]
 
-            files = [('image', ('frame.jpg', meta_crossing_frame_bytes, 'image/jpeg')),
-                     ('image', ('thres.jpg', meta_crossing_thres_bytes, 'image/jpeg')),]
-            response = requests.post("http://192.168.50.166:8080/lap/42",
-                                     data={"time": readable_time},
-                                     files=files)
-            response.raise_for_status()
-            print("✅ Success:", response.status_code)
-            print("📄 Response text:", response.text)
-        except requests.RequestException as e:
-            print("❌ Error posting event:", e)
-            if response is not None:
-                print("🛠 Response status code:", response.status_code)
-                print("📝 Response body:", response.text)
+        # Retry until success
+        while True:
+            try:
+                response = requests.post(
+                    "http://192.168.50.166:8080/lap/42",
+                    data={"time": readable_time},
+                    files=files,
+                    timeout=5  # good to have a timeout to avoid hanging forever
+                )
+                response.raise_for_status()
+                print("✅ Event posted successfully")
+                break
+            except requests.RequestException as e:
+                print("❌ Error posting event:", e)
 
-        time.sleep(0.001)   # Mostly unneeded, but just in case
+                # Optional: print response info if it exists
+                if isinstance(e, requests.HTTPError) and e.response is not None:
+                    print("🛠 Status code:", e.response.status_code)
+                    print("📝 Body:", e.response.text)
+
+                # Wait before retrying
+                time.sleep(3)
+
+        time.sleep(0.1)  # Mostly unneeded, but just in case
 
 
 

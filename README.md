@@ -10,6 +10,10 @@ Little improvements:
 * Prepare the frame to render only when broadcasting
 
 Big improvements:
+* Event retry should be different depending on what:
+  * Very fast for metadata
+  * Quite slow for images
+* Metadata and images should fly in different pipelines (and we shouldn't try images before succeeding with metadata)
 * Precise crossing line:
   * Use canny around detection for precise crossing line?
   * Evaluate the shadows over the meta line?
