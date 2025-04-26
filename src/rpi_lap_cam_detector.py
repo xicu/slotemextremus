@@ -665,7 +665,9 @@ def publishEvents():
             continue
 
         try:
-            files = {'image': ('lap.jpg', meta_crossing_frame_bytes, 'image/jpeg')}
+
+            files = [('image', ('frame.jpg', meta_crossing_frame_bytes, 'image/jpeg')),
+                     ('image', ('thres.jpg', meta_crossing_thres_bytes, 'image/jpeg')),]
             response = requests.post("http://192.168.50.166:8080/lap/42",
                                      data={"time": readable_time},
                                      files=files)
