@@ -2,7 +2,7 @@
 Lap detector for Slotem Extremus
 
 Bugs:
-* The background is not properly built. It whites out when the items are too large.
+* STREAM_SCALING is not used
 
 Little improvements:
 * Line_X as a percentage
@@ -18,6 +18,7 @@ Big improvements:
   * Evaluate the shadows over the meta line?
 * When tracking, do it only within a ROI for efficiency. Two parameters are needed: horizontal jump and vertical jump.
 * Detect & track to a different thread, queue to communicate, and skip frames when queue grows. Video can be smoother, but remember that libcamera2 graciously adapts the frame rate for us when dropping...
+* Adjust the whole background thing. We spent a lot of time on this and it happened to be an issue with the autoexposure!
 
 Day dreaming:
 * Use YOLO to actually track cars

@@ -24,7 +24,7 @@ DETECT_WHILE_TRACKING = False  # If True, will use detection while tracking. Con
 META_LINE_X_PX = 800                # X position of the detection line, in pixels
 MIN_Y_FACTOR = 0.20                # Minimum Y position of the detection line, in percentage
 MAX_Y_FACTOR = 0.85                # Maximum Y position of the detection line, in percentage
-WIDTH_OFFSET = 0.70         # Offset for the width of the detection line, in percentage, to mitigate detecting only fronts of the cars
+WIDTH_OFFSET = 0.60         # Offset for the width of the detection line, in percentage, to mitigate detecting only fronts of the cars
 MIN_COUNTOUR_AREA = 0.02    # Minimum area of contour to consider for tracking, in percentage of the frame size
 
 # === Streaming quality ===
@@ -344,7 +344,14 @@ def capture_frames():
     # varThreshold: Higher = less sensitive to movement.
     # detectShadows: If True, shadows will be marked gray (127), not white (255).
     #background = cv2.createBackgroundSubtractorKNN(history=50, dist2Threshold=200.0, detectShadows=DETECT_SHADOWS)
-    background = cv2.createBackgroundSubtractorMOG2(history=100, varThreshold=16, detectShadows=DETECT_SHADOWS)
+    background = cv2.createBackgroundSubtractorMOG2(history=150, varThreshold=32, detectShadows=DETECT_SHADOWS)
+
+#    picam2.set_controls({
+#        "AeEnable": False,         # Auto exposure OFF
+#        "ExposureTime": 1000,     # Set manually, tune for lighting
+#        "AnalogueGain": 1.0,       # Optional: fixed gain
+#        "AwbEnable": False         # Auto white balance OFF (optional)
+#    })
 
     while True:
 
@@ -409,6 +416,7 @@ def capture_frames():
             last_bbox_in_subframe_coordinates = None
             tracker_last_success_time = None
             trigger_cooldown = False
+            picam2.set_controls({"AeEnable": True, "AwbEnable": True})          # Enable auto exposure and white balance only during COOL_DOWN
 
         if recalibrate_flag:        ### NOT NEEDED - KEPT AS PLACEHOLDER FOR ANOTHER BUTTON
             background = cv2.createBackgroundSubtractorKNN(history=100, dist2Threshold=400.0, detectShadows=DETECT_SHADOWS)
@@ -431,6 +439,7 @@ def capture_frames():
 
         if curr_mode == SystemMode.COOL_DOWN:
             if curr_frame_time >= cooldown_until:
+                picam2.set_controls({"AeEnable": False, "AwbEnable": False})    # Disable auto exposure and white balance
                 curr_mode = SystemMode.DETECTING
                 print(">>> DETECTING mode after COOL_DOWN finished")
 
@@ -633,14 +642,14 @@ def framePostProcessingWorker():
                 overlay = np.full_like(curr_frame, 255)  # White overlay
                 cv2.addWeighted(overlay, alpha, curr_frame, 1 - alpha, 0, curr_frame)
 
-            # Lines
+            # Lines for the main frame
             cv2.line(curr_frame, (META_LINE_X_PX, int(FRAME_HEIGHT*MIN_Y_FACTOR)), (META_LINE_X_PX, int(FRAME_HEIGHT*MAX_Y_FACTOR)), (0, 255, 0), 2)
             cv2.line(curr_frame, (0, int(FRAME_HEIGHT*MIN_Y_FACTOR)), (FRAME_WIDTH, int(FRAME_HEIGHT*MIN_Y_FACTOR)), (0, 0, 255), 2)
             cv2.line(curr_frame, (0, int(FRAME_HEIGHT*MAX_Y_FACTOR)), (FRAME_WIDTH, int(FRAME_HEIGHT*MAX_Y_FACTOR)), (0, 0, 255), 2)
             cv2.line(curr_frame, (int(min_scaled_x/FRAME_SCALING), int(FRAME_HEIGHT*MIN_Y_FACTOR)), (int(min_scaled_x/FRAME_SCALING), int(FRAME_HEIGHT*MAX_Y_FACTOR)), (0, 0, 255), 2)
             cv2.line(curr_frame, (int(max_scaled_x/FRAME_SCALING), int(FRAME_HEIGHT*MIN_Y_FACTOR)), (int(max_scaled_x/FRAME_SCALING), int(FRAME_HEIGHT*MAX_Y_FACTOR)), (0, 0, 255), 2)
 
-            # Bounding box
+            # Bounding box for the main frame
             if last_bbox_in_subframe_coordinates:
                 x_full_frame = int(last_bbox_in_subframe_coordinates[0]/FRAME_SCALING)
                 y_full_frame = int((last_bbox_in_subframe_coordinates[1]+min_scaled_y)/FRAME_SCALING)
@@ -650,14 +659,23 @@ def framePostProcessingWorker():
                 cv2.putText(curr_frame, "Movida", (x_full_frame, y_full_frame - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, status_color, 1)
 
+            # Meta line for everyone
+            scaled_meta_line_x = int(META_LINE_X_PX * FRAME_SCALING)
+
             
             # META CROSSING QUEUEING
             if meta_crossing:
                 diff = cv2.absdiff(last_background_image, curr_subframe_gray)
                 # diff = cv2.GaussianBlur(diff, (5, 5), 0)
-                edges_TEST = cv2.Canny(diff, 80, 180)
-                meta_crossing_queue.put_nowait((curr_frame_time, curr_frame.copy(), last_background_thresh.copy(), curr_subframe_gray.copy(), edges_TEST.copy()))
-    #            meta_crossing_queue.put_nowait((curr_frame_time, curr_frame.copy(), last_background_thresh_from_detection.copy()))
+                edges = cv2.Canny(diff, 80, 180)
+
+                # Meta line for everyone
+                scaled_meta_line_x = int(META_LINE_X_PX * FRAME_SCALING)
+                cv2.line(curr_subframe_gray, (scaled_meta_line_x, 0), (scaled_meta_line_x, int(FRAME_HEIGHT*FRAME_SCALING)), (255, 255, 255), 1)
+                cv2.line(last_background_thresh, (scaled_meta_line_x, 0), (scaled_meta_line_x, int(FRAME_HEIGHT*FRAME_SCALING)), (255, 255, 255), 1)
+                cv2.line(last_background_image, (scaled_meta_line_x, 0), (scaled_meta_line_x, int(FRAME_HEIGHT*FRAME_SCALING)), (255, 255, 255), 1)
+                cv2.line(edges, (scaled_meta_line_x, 0), (scaled_meta_line_x, int(FRAME_HEIGHT*FRAME_SCALING)), (255, 255, 255), 1)
+                meta_crossing_queue.put_nowait((curr_frame_time, curr_frame.copy(), last_background_thresh.copy(), curr_subframe_gray.copy(), last_background_image.copy(), edges.copy()))
 
 
             # STREAMING QUEUEING
@@ -682,20 +700,21 @@ def framePostProcessingWorker():
 def processMetaCrossing():
     while True:
         try:
-            meta_crossing_time, meta_crossing_frame, meta_crossing_thres, meta_crossing_gray, meta_crossing_edges = meta_crossing_queue.get(block=True)
+            meta_crossing_time, meta_crossing_frame, meta_crossing_thres, meta_crossing_gray, meta_crossing_background, meta_crossing_edges = meta_crossing_queue.get(block=True)
             readable_time = time.strftime("%Y%m%d_%H%M%S", time.localtime(meta_crossing_time))
             print(f"META THREAD: Meta crossing at: {readable_time}")
             # cv2.imwrite(f"jpg/crossing_{readable_time}.jpg", meta_crossing_frame)
-            # cv2.imwrite(f"jpg/crossing_{readable_time}-thresh.jpg", meta_crossing_thres)
             _, jpg_bytes = cv2.imencode('.jpg', meta_crossing_frame)
             jpg_bytes = jpg_bytes.tobytes()
             _, jpg_bytes_thres = cv2.imencode('.jpg', meta_crossing_thres)
             jpg_bytes_thres = jpg_bytes_thres.tobytes()
             _, jpg_bytes_gray = cv2.imencode('.jpg', meta_crossing_gray)
             jpg_bytes_gray = jpg_bytes_gray.tobytes()
+            _, jpg_bytes_background = cv2.imencode('.jpg', meta_crossing_background)
+            jpg_bytes_background = jpg_bytes_background.tobytes()
             _, jpg_bytes_edges = cv2.imencode('.jpg', meta_crossing_edges)
             jpg_bytes_edges = jpg_bytes_edges.tobytes()
-            pending_events_queue.put_nowait((meta_crossing_time, jpg_bytes, jpg_bytes_thres, jpg_bytes_gray, jpg_bytes_edges)) 
+            pending_events_queue.put_nowait((meta_crossing_time, jpg_bytes, jpg_bytes_thres, jpg_bytes_gray, jpg_bytes_background, jpg_bytes_edges)) 
 
         except Exception as e:
             print(f"Error: {e}")
@@ -710,7 +729,7 @@ def processMetaCrossing():
 def publishEvents():
     while True:
         try:
-            meta_crossing_time, meta_crossing_frame_bytes, meta_crossing_thres_bytes, meta_crossing_gray_bytes, meta_crossing_edges_bytes = pending_events_queue.get(block=True)
+            meta_crossing_time, meta_crossing_frame_bytes, meta_crossing_thres_bytes, meta_crossing_gray_bytes, meta_crossing_background_bytes, meta_crossing_edges_bytes = pending_events_queue.get(block=True)
             readable_time = time.strftime("%Y%m%d_%H%M%S", time.localtime(meta_crossing_time))
             print(f"EVENTS THREAD: Processing crossing at: {readable_time}")
         except Exception as e:
@@ -720,6 +739,7 @@ def publishEvents():
             ('image', ('frame.jpg', meta_crossing_frame_bytes, 'image/jpeg')),
             ('image', ('thres.jpg', meta_crossing_thres_bytes, 'image/jpeg')),
             ('image', ('gray.jpg', meta_crossing_gray_bytes, 'image/jpeg')),
+            ('image', ('background.jpg', meta_crossing_background_bytes, 'image/jpeg')),
             ('image', ('edges.jpg', meta_crossing_edges_bytes, 'image/jpeg')),
         ]
 
