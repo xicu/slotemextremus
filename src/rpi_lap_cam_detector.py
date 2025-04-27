@@ -21,9 +21,9 @@ FRAME_FPS = 60      # FPS target
 DUAL_STREAM_MODE = False
 DETECT_WHILE_TRACKING = False  # If True, will use detection while tracking. Contours will expand, but it will be CPU heavy and needs tweaking here and there!
 
-LINE_X = 800                # X position of the detection line, in pixels
-MIN_Y = 0.20                # Minimum Y position of the detection line, in percentage
-MAX_Y = 0.85                # Maximum Y position of the detection line, in percentage
+META_LINE_X_PX = 800                # X position of the detection line, in pixels
+MIN_Y_FACTOR = 0.20                # Minimum Y position of the detection line, in percentage
+MAX_Y_FACTOR = 0.85                # Maximum Y position of the detection line, in percentage
 WIDTH_OFFSET = 0.70         # Offset for the width of the detection line, in percentage, to mitigate detecting only fronts of the cars
 MIN_COUNTOUR_AREA = 0.02    # Minimum area of contour to consider for tracking, in percentage of the frame size
 
@@ -38,12 +38,11 @@ trigger_cooldown = False
 new_tracker_type = None
 recalibrate_flag = False
 
-last_crossing_time = None
 MOTION_HISTORY_LENGTH = 0           # No contour change with 0. Dilate with 1. Real motion history with >1.
 CROSSING_FLASH_TIME = 0.4           # Seconds
 COOL_DOWN_TIME = 1.0                # Seconds
 TRACKING_TIMEOUT = 5.0              # Max time in the same tracker
-TRACKING_RESILIENCE_LIMIT = 0.01    # Max time without tracking success before swtiching to DETECTING mode
+TRACKING_RESILIENCE_LIMIT = 0.05    # Max time without tracking success before swtiching to DETECTING mode
 DETECT_SHADOWS = False              # For the background substractor config
 TRACKER_TYPE = None
 tracker = None
@@ -57,6 +56,9 @@ last_status_result = {}
 tracker_start_time = None
 tracker_last_success_time = None
 last_bbox_in_subframe_coordinates = None
+
+# After motion detection, tracking, etc. frames are queued for processing
+post_processing_queue = queue.Queue(maxsize=0)
 
 # Meta crossing queue, holding the last frame with a crossing and lots of additional data
 meta_crossing_queue = queue.Queue(maxsize=0)
@@ -226,6 +228,7 @@ def reset_autofocus():
         print(f"Error resetting autofocus: {e}")
 
 # === Bounding Box Functions ===
+def bbox_contains(box_a, box_b):
     if box_a is None:
         return False
 
@@ -313,13 +316,14 @@ picam2.start()
 # MAIN FUNCTION
 #
 def capture_frames():
-    global tracker, last_crossing_time
+    global tracker
     global trigger_cooldown, recalibrate_flag
-    global new_tracker_type, TRACKER_TYPE, LINE_X, DETECT_SHADOWS
+    global new_tracker_type, TRACKER_TYPE, META_LINE_X_PX, DETECT_SHADOWS
     global tracker_start_time, last_bbox_in_subframe_coordinates, tracker_last_success_time
     global fps_global_string
 
     prev_frame_time = time.time()
+    last_crossing_time = None
 
     fps_temp_counter = 0
     fps_temp_start = time.time()
@@ -339,7 +343,8 @@ def capture_frames():
     # history: Number of frames to use for background modeling.
     # varThreshold: Higher = less sensitive to movement.
     # detectShadows: If True, shadows will be marked gray (127), not white (255).
-    background = cv2.createBackgroundSubtractorKNN(history=200, dist2Threshold=200.0, detectShadows=DETECT_SHADOWS)
+    #background = cv2.createBackgroundSubtractorKNN(history=50, dist2Threshold=200.0, detectShadows=DETECT_SHADOWS)
+    background = cv2.createBackgroundSubtractorMOG2(history=100, varThreshold=16, detectShadows=DETECT_SHADOWS)
 
     while True:
 
@@ -351,17 +356,18 @@ def capture_frames():
         curr_frame = picam2.capture_array("main")
         curr_scaled_frame_width = int(curr_frame.shape[1] * FRAME_SCALING)
         curr_scaled_frame_height = int(curr_frame.shape[0] * FRAME_SCALING)
-        min_y_px = int(curr_scaled_frame_height * MIN_Y)
-        max_y_px = int(curr_scaled_frame_height * MAX_Y)
-        min_x_px = int(FRAME_SCALING * LINE_X * (1.0 - WIDTH_OFFSET))
-        max_x_px = FRAME_SCALING * LINE_X + int(WIDTH_OFFSET * (curr_scaled_frame_width - FRAME_SCALING * LINE_X))
+        scaled_meta_line_x = int(META_LINE_X_PX * FRAME_SCALING)
+        min_scaled_y = int(curr_scaled_frame_height * MIN_Y_FACTOR)
+        max_scaled_y = int(curr_scaled_frame_height * MAX_Y_FACTOR)
+        min_scaled_x = int(scaled_meta_line_x * (1.0 - WIDTH_OFFSET))
+        max_scaled_x = scaled_meta_line_x + int(WIDTH_OFFSET * (curr_scaled_frame_width - scaled_meta_line_x))
         min_accepted_area = int(curr_scaled_frame_width * curr_scaled_frame_height * MIN_COUNTOUR_AREA)
 
 
         # Resize and crop for processing
         if DUAL_STREAM_MODE:
             current_frame_resized = picam2.capture_array("lores")
-            curr_subframe_gray = current_frame_resized[min_y_px:max_y_px, :curr_scaled_frame_width]
+            curr_subframe_gray = current_frame_resized[min_scaled_y:max_scaled_y, :curr_scaled_frame_width]
 
         else:
             # Blur the image before resizing to clean some noise, as it comes from high frame rate video
@@ -380,13 +386,13 @@ def capture_frames():
             curr_subframe_gray = cv2.cvtColor(current_frame_resized, cv2.COLOR_BGR2GRAY)
 
             # Crop vertically
-            curr_subframe_gray = curr_subframe_gray[min_y_px:max_y_px, :]
+            curr_subframe_gray = curr_subframe_gray[min_scaled_y:max_scaled_y, :]
 
         curr_subframe_height, curr_subframe_width = curr_subframe_gray.shape[:2]
 
-        # Feed the background substractor (not in tracking - tracking would polute the background))
-        if curr_mode != SystemMode.TRACKING:
-            curr_background_thresh = background.apply(curr_subframe_gray)
+        # Feed the background substractor (only in cool down - tracking would polute the background))
+        if curr_mode == SystemMode.COOL_DOWN:
+            last_background_thresh = background.apply(curr_subframe_gray)
 
 
 
@@ -456,11 +462,11 @@ def capture_frames():
                     prev_x2 = prev_x1 + last_bbox_in_subframe_coordinates[2]
                     new_x1 = new_bbox[0]
                     new_x2 = new_x1 + new_bbox[2]
-                    if prev_x2 < LINE_X * FRAME_SCALING and new_x2 >= LINE_X * FRAME_SCALING:
+                    if prev_x2 < scaled_meta_line_x and new_x2 >= scaled_meta_line_x:
                         last_crossing_time = curr_frame_time
                         tracker_start_time = curr_frame_time         # Extend the TTL of the tracker
                         print(f"--> CROSSING from LEFT to RIGHT")
-                    elif prev_x1 > LINE_X * FRAME_SCALING and new_x1 <= LINE_X * FRAME_SCALING:
+                    elif prev_x1 > scaled_meta_line_x and new_x1 <= scaled_meta_line_x:
                         last_crossing_time = curr_frame_time
                         tracker_start_time = curr_frame_time         # Extend the TTL of the tracker
                         print(f"--> CROSSING from RIGHT to LEFT")
@@ -484,28 +490,33 @@ def capture_frames():
 
         if curr_mode == SystemMode.DETECTING or (DETECT_WHILE_TRACKING and curr_mode == SystemMode.TRACKING):
 
+#            background_frame = background.getBackgroundImage()
+#            diff = cv2.absdiff(background_frame, curr_subframe_gray)
+#            edges = cv2.Canny(diff, 80, 180)
+            last_background_thresh = background.apply(curr_subframe_gray, learningRate=0)
+
             # Clean the background
             if DETECT_SHADOWS:  # Removes shadows (if detectShadows=True)
-                curr_background_thresh = cv2.threshold(curr_background_thresh, 200, 255, cv2.THRESH_BINARY)[1]
+                last_background_thresh = cv2.threshold(last_background_thresh, 200, 255, cv2.THRESH_BINARY)[1]
             kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
             # back_sub_thresh = cv2.morphologyEx(back_sub_thresh, cv2.MORPH_OPEN, kernel)   # Combines erosion & dilation
-            curr_background_thresh = cv2.morphologyEx(curr_background_thresh, cv2.MORPH_CLOSE, kernel)  # Combines dilation & erosion
+            last_background_thresh = cv2.morphologyEx(last_background_thresh, cv2.MORPH_CLOSE, kernel)  # Combines dilation & erosion
             # back_sub_thresh = cv2.dilate(back_sub_thresh, None, iterations=2)             # Removes noise
             # back_sub_thresh = cv2.erode(back_sub_thresh, None, iterations=1)              # Erode to remove noise
 
             # Optional motion detection
             if MOTION_HISTORY_LENGTH > 1:
                 if curr_mode != SystemMode.TRACKING:  # Do NOT update motion history if we're in TRACKING mode (when combining tracking and detection)
-                    motion_history.append(curr_background_thresh.copy())
+                    motion_history.append(last_background_thresh.copy())
                 if len(motion_history) > MOTION_HISTORY_LENGTH:
                     motion_history.pop(0)
                 # Combine all motion masks
-                curr_background_thresh = np.bitwise_or.reduce(motion_history)
+                last_background_thresh = np.bitwise_or.reduce(motion_history)
 
             # Find contours only when we're not waiting for the motion history to build up
             contours = []
             if not (MOTION_HISTORY_LENGTH > 1 and len(motion_history) < MOTION_HISTORY_LENGTH):
-                contours, _ = cv2.findContours(curr_background_thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                contours, _ = cv2.findContours(last_background_thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
             largest_contour = None
             max_area = 0
@@ -513,12 +524,16 @@ def capture_frames():
                 bbox = cv2.boundingRect(c)
                 area = bbox_area(bbox)
 
-                if (area > max_area and                                                         # Getting the largest contour
-                    area > min_accepted_area and                                                # Min area requirement
-                    (bbox[1]+bbox[2]) > min_x_px and                                            # Not too close to the left edge
-                    bbox[0] < max_x_px):                                                        # Not too close to the right edge
+                if (area > max_area and                     # Getting the largest contour
+                    area > min_accepted_area and            # Min area requirement
+                    (bbox[1]+bbox[2]) > min_scaled_x and    # Not too close to the left edge
+                    bbox[0] < max_scaled_x):                # Not too close to the right edge
                     largest_contour = c
                     max_area = area
+
+            # If we didn't find contours, we use this frame to build the background
+            if len(contours) == 0:
+                background.apply(curr_subframe_gray, learningRate=0.01)
 
             # Note that the last bbox will either be empty or will be overridable when combining tracking and detection is enabled
             if max_area > 0 and max_area >= bbox_area(last_bbox_in_subframe_coordinates):
@@ -568,11 +583,42 @@ def capture_frames():
             fps_temp_start = curr_frame_time
 
 
+
         #
         # IMAGE POST-PROCESSING (WHEN NEEDED)
         #
 
         if (meta_crossing or fps_temp_counter % STREAM_EVERY_X_FRAMES == 0):
+            post_processing_queue.put_nowait((background.apply(curr_subframe_gray, learningRate=0),
+                                              background.getBackgroundImage().copy(), 
+                                              curr_frame.copy(),
+                                              curr_frame_time,
+                                              curr_subframe_gray.copy(),
+                                              min_scaled_x,
+                                              max_scaled_x,
+                                              min_scaled_y,
+                                              fps_string,
+                                              status_color,
+                                              meta_crossing,
+                                              last_crossing_time,
+                                              STREAM_EVERY_X_FRAMES > 1 and fps_temp_counter % STREAM_EVERY_X_FRAMES == 0))
+
+
+        # ...and loop!
+        prev_frame_time = curr_frame_time
+        time.sleep(0.001)   # Avoid suffocating the CPU
+
+
+
+#
+# FRAME POST PROCESSING THREAD
+#
+def framePostProcessingWorker():
+    while True:
+        try:
+            last_background_thresh, last_background_image, curr_frame, curr_frame_time, curr_subframe_gray, min_scaled_x, max_scaled_x, min_scaled_y, fps_string, status_color, meta_crossing, last_crossing_time, stream = post_processing_queue.get(block=True)
+
+            # FRAME BEAUTIFICATION
             # Display FPS on the frame
             cv2.putText(curr_frame, f"{fps_string}", (10, 50),
                         cv2.FONT_HERSHEY_SIMPLEX, 1.0, status_color, 2)
@@ -588,55 +634,55 @@ def capture_frames():
                 cv2.addWeighted(overlay, alpha, curr_frame, 1 - alpha, 0, curr_frame)
 
             # Lines
-            cv2.line(curr_frame, (LINE_X, int(FRAME_HEIGHT*MIN_Y)), (LINE_X, int(FRAME_HEIGHT*MAX_Y)), (0, 255, 0), 2)
-            cv2.line(curr_frame, (0, int(FRAME_HEIGHT*MIN_Y)), (FRAME_WIDTH, int(FRAME_HEIGHT*MIN_Y)), (0, 0, 255), 2)
-            cv2.line(curr_frame, (0, int(FRAME_HEIGHT*MAX_Y)), (FRAME_WIDTH, int(FRAME_HEIGHT*MAX_Y)), (0, 0, 255), 2)
-            cv2.line(curr_frame, (int(min_x_px/FRAME_SCALING), int(FRAME_HEIGHT*MIN_Y)), (int(min_x_px/FRAME_SCALING), int(FRAME_HEIGHT*MAX_Y)), (0, 0, 255), 2)
-            cv2.line(curr_frame, (int(max_x_px/FRAME_SCALING), int(FRAME_HEIGHT*MIN_Y)), (int(max_x_px/FRAME_SCALING), int(FRAME_HEIGHT*MAX_Y)), (0, 0, 255), 2)
+            cv2.line(curr_frame, (META_LINE_X_PX, int(FRAME_HEIGHT*MIN_Y_FACTOR)), (META_LINE_X_PX, int(FRAME_HEIGHT*MAX_Y_FACTOR)), (0, 255, 0), 2)
+            cv2.line(curr_frame, (0, int(FRAME_HEIGHT*MIN_Y_FACTOR)), (FRAME_WIDTH, int(FRAME_HEIGHT*MIN_Y_FACTOR)), (0, 0, 255), 2)
+            cv2.line(curr_frame, (0, int(FRAME_HEIGHT*MAX_Y_FACTOR)), (FRAME_WIDTH, int(FRAME_HEIGHT*MAX_Y_FACTOR)), (0, 0, 255), 2)
+            cv2.line(curr_frame, (int(min_scaled_x/FRAME_SCALING), int(FRAME_HEIGHT*MIN_Y_FACTOR)), (int(min_scaled_x/FRAME_SCALING), int(FRAME_HEIGHT*MAX_Y_FACTOR)), (0, 0, 255), 2)
+            cv2.line(curr_frame, (int(max_scaled_x/FRAME_SCALING), int(FRAME_HEIGHT*MIN_Y_FACTOR)), (int(max_scaled_x/FRAME_SCALING), int(FRAME_HEIGHT*MAX_Y_FACTOR)), (0, 0, 255), 2)
 
             # Bounding box
             if last_bbox_in_subframe_coordinates:
                 x_full_frame = int(last_bbox_in_subframe_coordinates[0]/FRAME_SCALING)
-                y_full_frame = int((last_bbox_in_subframe_coordinates[1]+min_y_px)/FRAME_SCALING)
+                y_full_frame = int((last_bbox_in_subframe_coordinates[1]+min_scaled_y)/FRAME_SCALING)
                 w_full_frame = int(last_bbox_in_subframe_coordinates[2]/FRAME_SCALING)
                 h_full_frame = int(last_bbox_in_subframe_coordinates[3]/FRAME_SCALING)
                 cv2.rectangle(curr_frame, (x_full_frame, y_full_frame), (x_full_frame + w_full_frame, y_full_frame + h_full_frame), status_color, 2)
                 cv2.putText(curr_frame, "Movida", (x_full_frame, y_full_frame - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, status_color, 1)
 
-
-        #
-        # META CROSSING QUEUEING
-        #
-        if meta_crossing:
-            meta_crossing_queue.put_nowait((curr_frame_time, curr_frame.copy(), curr_background_thresh.copy()))
-
-
-        #
-        # STREAMING QUEUEING
-        #
-#       Theoritecally correct, but slower        
-#        try:
-#            frame_queue.put_nowait(frame.copy())
-#        except queue.Full:
-#            pass  # just skip, or log dropped frames
-        if STREAM_EVERY_X_FRAMES > 1 and fps_temp_counter % STREAM_EVERY_X_FRAMES == 0 and not streaming_frame_queue.full():
-            streaming_frame_queue.put_nowait(curr_frame.copy())
+            
+            # META CROSSING QUEUEING
+            if meta_crossing:
+                diff = cv2.absdiff(last_background_image, curr_subframe_gray)
+                # diff = cv2.GaussianBlur(diff, (5, 5), 0)
+                edges_TEST = cv2.Canny(diff, 80, 180)
+                meta_crossing_queue.put_nowait((curr_frame_time, curr_frame.copy(), last_background_thresh.copy(), curr_subframe_gray.copy(), edges_TEST.copy()))
+    #            meta_crossing_queue.put_nowait((curr_frame_time, curr_frame.copy(), last_background_thresh_from_detection.copy()))
 
 
-        # ...and loop!
-        prev_frame_time = curr_frame_time
-        time.sleep(0.001)   # Avoid suffocating the CPU
+            # STREAMING QUEUEING
+    #       Theoritecally correct, but slower        
+    #        try:
+    #            frame_queue.put_nowait(frame.copy())
+    #        except queue.Full:
+    #            pass  # just skip, or log dropped frames
+            if stream and not streaming_frame_queue.full():
+                streaming_frame_queue.put_nowait(curr_frame.copy())
+
+        except Exception as e:
+            print(f"Error: {e}")
+
+        time.sleep(0.01)   # Avoid suffocating the CPU
 
 
 
 #
-# META PROCESSING
+# META PROCESSING THREAD
 #
 def processMetaCrossing():
     while True:
         try:
-            meta_crossing_time, meta_crossing_frame, meta_crossing_thres = meta_crossing_queue.get(timeout=3)
+            meta_crossing_time, meta_crossing_frame, meta_crossing_thres, meta_crossing_gray, meta_crossing_edges = meta_crossing_queue.get(block=True)
             readable_time = time.strftime("%Y%m%d_%H%M%S", time.localtime(meta_crossing_time))
             print(f"META THREAD: Meta crossing at: {readable_time}")
             # cv2.imwrite(f"jpg/crossing_{readable_time}.jpg", meta_crossing_frame)
@@ -645,27 +691,36 @@ def processMetaCrossing():
             jpg_bytes = jpg_bytes.tobytes()
             _, jpg_bytes_thres = cv2.imencode('.jpg', meta_crossing_thres)
             jpg_bytes_thres = jpg_bytes_thres.tobytes()
-            pending_events_queue.put_nowait((meta_crossing_time, jpg_bytes, jpg_bytes_thres)) 
+            _, jpg_bytes_gray = cv2.imencode('.jpg', meta_crossing_gray)
+            jpg_bytes_gray = jpg_bytes_gray.tobytes()
+            _, jpg_bytes_edges = cv2.imencode('.jpg', meta_crossing_edges)
+            jpg_bytes_edges = jpg_bytes_edges.tobytes()
+            pending_events_queue.put_nowait((meta_crossing_time, jpg_bytes, jpg_bytes_thres, jpg_bytes_gray, jpg_bytes_edges)) 
 
-        except queue.Empty:
-            continue
+        except Exception as e:
+            print(f"Error: {e}")
 
         time.sleep(0.1)   # Mostly unneeded, but just in case
 
 
 
+#
+# PUBLISHING EVENTS THREADS
+#
 def publishEvents():
     while True:
         try:
-            meta_crossing_time, meta_crossing_frame_bytes, meta_crossing_thres_bytes = pending_events_queue.get(timeout=3)
+            meta_crossing_time, meta_crossing_frame_bytes, meta_crossing_thres_bytes, meta_crossing_gray_bytes, meta_crossing_edges_bytes = pending_events_queue.get(block=True)
             readable_time = time.strftime("%Y%m%d_%H%M%S", time.localtime(meta_crossing_time))
             print(f"EVENTS THREAD: Processing crossing at: {readable_time}")
-        except queue.Empty:
-            continue
+        except Exception as e:
+            print(f"Error: {e}")
 
         files = [
             ('image', ('frame.jpg', meta_crossing_frame_bytes, 'image/jpeg')),
             ('image', ('thres.jpg', meta_crossing_thres_bytes, 'image/jpeg')),
+            ('image', ('gray.jpg', meta_crossing_gray_bytes, 'image/jpeg')),
+            ('image', ('edges.jpg', meta_crossing_edges_bytes, 'image/jpeg')),
         ]
 
         # Retry until success
@@ -752,9 +807,9 @@ def index():
     return render_template_string(HTML_PAGE,
         trackers=AVAILABLE_TRACKERS.keys(),
         current_tracker=TRACKER_TYPE,
-        line_x=LINE_X,
-        min_y=int(MIN_Y*100),
-        max_y=int(MAX_Y*100),
+        line_x=META_LINE_X_PX,
+        min_y=int(MIN_Y_FACTOR*100),
+        max_y=int(MAX_Y_FACTOR*100),
         width=int(FRAME_WIDTH),
         cpu_usage="Calculating...",
         cpu_temp="N/A",
@@ -791,40 +846,40 @@ def recalibrate():
 
 @app.route('/set_line')
 def set_line():
-    global LINE_X
+    global META_LINE_X_PX
     try:
-        LINE_X = int(request.args.get('x'))
-        return f"Line X set to {LINE_X}", 200
+        META_LINE_X_PX = int(request.args.get('x'))
+        return f"Line X set to {META_LINE_X_PX}", 200
     except:
         return "Invalid value", 400
 
 @app.route('/set_min_y')
 def set_min_y():
-    global MIN_Y
-    global MAX_Y
+    global MIN_Y_FACTOR
+    global MAX_Y_FACTOR
     global trigger_cooldown
     try:
         y = float(request.args.get('y'))/100.0
-        if y >= MAX_Y:
+        if y >= MAX_Y_FACTOR:
             return "Min Y must be less than Max Y", 400
-        MIN_Y = y
+        MIN_Y_FACTOR = y
         trigger_cooldown = True
-        return f"Min Y set to {MIN_Y}", 200
+        return f"Min Y set to {MIN_Y_FACTOR}", 200
     except:
         return "Invalid value", 400
 
 @app.route('/set_max_y')
 def set_max_y():
-    global MIN_Y
-    global MAX_Y
+    global MIN_Y_FACTOR
+    global MAX_Y_FACTOR
     global trigger_cooldown
     try:
         y = float(request.args.get('y'))/100.0
-        if y <= MIN_Y:
+        if y <= MIN_Y_FACTOR:
             return "Max Y must be less than Min Y", 400
-        MAX_Y = y
+        MAX_Y_FACTOR = y
         trigger_cooldown = True
-        return f"Max Y set to {MAX_Y}", 200
+        return f"Max Y set to {MAX_Y_FACTOR}", 200
     except:
         return "Invalid value", 400
 
@@ -836,6 +891,7 @@ def reset_autofocus_route():
 # === Start Threads ===
 if __name__ == '__main__':
     threading.Thread(target=capture_frames, daemon=True).start()
+    threading.Thread(target=framePostProcessingWorker, daemon=True).start()
     threading.Thread(target=processMetaCrossing, daemon=True).start()
     threading.Thread(target=publishEvents, daemon=True).start()
     app.run(host='0.0.0.0', port=5000, threaded=True)
