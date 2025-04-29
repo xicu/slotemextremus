@@ -470,7 +470,7 @@ def capture_frames():
                     trigger_cooldown = True
                     continue
 
-                # Detect crossing the line
+                # Detect a potential crossing of the line
                 if meta_crossing_status == 0 and last_bbox_in_subframe_coordinates:
                     prev_x1 = last_bbox_in_subframe_coordinates[0]
                     prev_x2 = prev_x1 + last_bbox_in_subframe_coordinates[2]
@@ -589,7 +589,6 @@ def capture_frames():
 
         # Variable aggregation
         status_color = mode_colors.get(curr_mode, (255, 255, 255))
-        meta_crossing = (last_crossing_time == curr_frame_time)
 
         # Time and FPS calculation
         frame_duration = curr_frame_time - prev_frame_time
@@ -622,7 +621,7 @@ def capture_frames():
         # IMAGE POST-PROCESSING (WHEN NEEDED)
         #
 
-        if (meta_crossing or fps_temp_counter % STREAM_EVERY_X_FRAMES == 0):
+        if (meta_crossing_status > 0 or fps_temp_counter % STREAM_EVERY_X_FRAMES == 0):
             post_processing_queue.put_nowait((background.apply(curr_subframe_gray, learningRate=0),
                                               background.getBackgroundImage().copy(), 
                                               prev_frame.copy(),
@@ -634,7 +633,7 @@ def capture_frames():
                                               min_scaled_y,
                                               fps_string,
                                               status_color,
-                                              meta_crossing,
+                                              meta_crossing_status,
                                               last_crossing_time,
                                               STREAM_EVERY_X_FRAMES > 1 and fps_temp_counter % STREAM_EVERY_X_FRAMES == 0))
 
@@ -709,8 +708,8 @@ def framePostProcessingWorker():
 
 
             # META CROSSING QUEUEING
-            if meta_crossing:
-                meta_crossing_queue.put_nowait((curr_frame_time, prev_frame.copy(), curr_frame.copy(), stacked_images.copy()))
+            if meta_crossing > 0:
+                meta_crossing_queue.put_nowait((meta_crossing, curr_frame_time, prev_frame.copy(), curr_frame.copy(), stacked_images.copy()))
 
 
             # STREAMING QUEUEING
@@ -736,7 +735,7 @@ def framePostProcessingWorker():
 def processMetaCrossing():
     while True:
         try:
-            meta_crossing_time, meta_crossing_prev, meta_crossing_frame, meta_crossing_stack = meta_crossing_queue.get(block=True)
+            meta_crossing_status, meta_crossing_time, meta_crossing_prev, meta_crossing_frame, meta_crossing_stack = meta_crossing_queue.get(block=True)
 
             readable_time = time.strftime("%Y%m%d_%H%M%S", time.localtime(meta_crossing_time))
             print(f"META THREAD: Meta crossing at: {readable_time}")
@@ -749,7 +748,7 @@ def processMetaCrossing():
             _, jpg_bytes_stack = cv2.imencode('.jpg', meta_crossing_stack)
             jpg_bytes_stack = jpg_bytes_stack.tobytes()
 
-            pending_events_queue.put_nowait((meta_crossing_time, jpg_byte_prev, jpg_byte_current, jpg_bytes_stack)) 
+            pending_events_queue.put_nowait((meta_crossing_status, meta_crossing_time, jpg_byte_prev, jpg_byte_current, jpg_bytes_stack)) 
 
         except Exception as e:
             print(f"Error: {e}")
@@ -764,7 +763,7 @@ def processMetaCrossing():
 def publishEvents():
     while True:
         try:
-            meta_crossing_time, meta_crossing_prev_bytes, meta_crossing_frame_bytes, meta_crossing_stack_bytes = pending_events_queue.get(block=True)
+            meta_crossing_status, meta_crossing_time, meta_crossing_prev_bytes, meta_crossing_frame_bytes, meta_crossing_stack_bytes = pending_events_queue.get(block=True)
             readable_time = time.strftime("%Y%m%d_%H%M%S", time.localtime(meta_crossing_time))
             print(f"EVENTS THREAD: Processing crossing at: {readable_time}")
         except Exception as e:
@@ -781,10 +780,14 @@ def publishEvents():
             try:
                 response = requests.post(
                     "http://192.168.50.166:8080/lap/42",
-                    data={"time": readable_time},
+                    data={
+                        "time": readable_time,
+                        "crossing_status": meta_crossing_status
+                    },
                     files=files,
                     timeout=5  # good to have a timeout to avoid hanging forever
                 )
+                response = requests.post()
                 response.raise_for_status()
                 print("✅ Event posted successfully")
                 break
