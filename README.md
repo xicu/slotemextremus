@@ -5,6 +5,7 @@ Bugs:
 * STREAM_SCALING is not used
 
 Little improvements:
+* Meta crossed flag up on crossing and down on cool_down
 * Line_X as a percentage
 * Use nanotime from capturerequest instead of system time
 

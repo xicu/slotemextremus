@@ -459,6 +459,8 @@ def capture_frames():
 
             success, new_bbox = tracker.update(curr_subframe_gray)
             if success:
+                tracker_last_success_time = curr_frame_time
+
                 # Check if object has left the visible frame
                 center_x, center_y = bbox_center(new_bbox)
                 if not (0 <= center_x < curr_subframe_width and 0 <= center_y < curr_subframe_height):
@@ -466,23 +468,46 @@ def capture_frames():
                     trigger_cooldown = True
                     continue
 
+
+
+
                 # Detect crossing the line
                 if last_bbox_in_subframe_coordinates:
-                    prev_x1 = last_bbox_in_subframe_coordinates[0]
-                    prev_x2 = prev_x1 + last_bbox_in_subframe_coordinates[2]
-                    new_x1 = new_bbox[0]
-                    new_x2 = new_x1 + new_bbox[2]
-                    if prev_x2 < scaled_meta_line_x and new_x2 >= scaled_meta_line_x:
+#                    prev_x1 = last_bbox_in_subframe_coordinates[0]
+#                    prev_x2 = prev_x1 + last_bbox_in_subframe_coordinates[2]
+#                    new_x1 = new_bbox[0]
+#                    new_x2 = new_x1 + new_bbox[2]
+#                    if prev_x2 < scaled_meta_line_x and new_x2 >= scaled_meta_line_x:
+#                        last_crossing_time = curr_frame_time
+#                        tracker_start_time = curr_frame_time         # Extend the TTL of the tracker
+#                        print(f"--> CROSSING from LEFT to RIGHT")
+#                    elif prev_x1 > scaled_meta_line_x and new_x1 <= scaled_meta_line_x:
+#                        last_crossing_time = curr_frame_time
+#                        tracker_start_time = curr_frame_time         # Extend the TTL of the tracker
+#                        print(f"--> CROSSING from RIGHT to LEFT")
+
+
+                    # Build the edges image
+                    diff = cv2.absdiff(background.getBackgroundImage(), curr_subframe_gray)
+                    diff = cv2.GaussianBlur(diff, (5, 5), 0)
+                    edges = cv2.Canny(diff, 80, 180)
+
+                    x, y, w, h = new_bbox
+                    roi_width = 1  # number of pixels to the left and right of the meta line
+                    roi_x1 = int(max(x, scaled_meta_line_x - roi_width))
+                    roi_x2 = int(min(x + w, scaled_meta_line_x + roi_width))
+                    roi_y1 = int(y)
+                    roi_y2 = int(y + h)
+
+                    roi = edges[roi_y1:roi_y2, roi_x1:roi_x2]
+
+                    edge_pixels = cv2.countNonZero(roi)
+                    if edge_pixels > 2:
                         last_crossing_time = curr_frame_time
                         tracker_start_time = curr_frame_time         # Extend the TTL of the tracker
                         print(f"--> CROSSING from LEFT to RIGHT")
-                    elif prev_x1 > scaled_meta_line_x and new_x1 <= scaled_meta_line_x:
-                        last_crossing_time = curr_frame_time
-                        tracker_start_time = curr_frame_time         # Extend the TTL of the tracker
-                        print(f"--> CROSSING from RIGHT to LEFT")
 
                 last_bbox_in_subframe_coordinates = new_bbox
-                tracker_last_success_time = curr_frame_time
 
             else:
                 # Tracking failed
