@@ -322,6 +322,8 @@ def capture_frames():
     global tracker_start_time, last_bbox_in_subframe_coordinates, tracker_last_success_time
     global fps_global_string
 
+    prev_frame = None
+    curr_frame = None
     prev_frame_time = time.time()
     last_crossing_time = None
 
@@ -360,6 +362,7 @@ def capture_frames():
         #
 
         curr_frame_time = time.time()
+        prev_frame = curr_frame
         curr_frame = picam2.capture_array("main")
         curr_scaled_frame_width = int(curr_frame.shape[1] * FRAME_SCALING)
         curr_scaled_frame_height = int(curr_frame.shape[0] * FRAME_SCALING)
@@ -497,9 +500,8 @@ def capture_frames():
 
         if curr_mode == SystemMode.DETECTING or (DETECT_WHILE_TRACKING and curr_mode == SystemMode.TRACKING):
 
-#            background_frame = background.getBackgroundImage()
-#            diff = cv2.absdiff(background_frame, curr_subframe_gray)
-#            edges = cv2.Canny(diff, 80, 180)
+#            diff = cv2.absdiff(background.getBackgroundImage(), curr_subframe_gray)
+#            last_background_thresh = cv2.GaussianBlur(diff, (5, 5), 0)
             last_background_thresh = background.apply(curr_subframe_gray, learningRate=0)
 
             # Clean the background
@@ -509,7 +511,7 @@ def capture_frames():
             # back_sub_thresh = cv2.morphologyEx(back_sub_thresh, cv2.MORPH_OPEN, kernel)   # Combines erosion & dilation
             last_background_thresh = cv2.morphologyEx(last_background_thresh, cv2.MORPH_CLOSE, kernel)  # Combines dilation & erosion
             # back_sub_thresh = cv2.dilate(back_sub_thresh, None, iterations=2)             # Removes noise
-            # back_sub_thresh = cv2.erode(back_sub_thresh, None, iterations=1)              # Erode to remove noise
+            # last_background_thresh = cv2.erode(last_background_thresh, None, iterations=2)              # Erode to remove noise
 
             # Optional motion detection
             if MOTION_HISTORY_LENGTH > 1:
@@ -598,6 +600,7 @@ def capture_frames():
         if (meta_crossing or fps_temp_counter % STREAM_EVERY_X_FRAMES == 0):
             post_processing_queue.put_nowait((background.apply(curr_subframe_gray, learningRate=0),
                                               background.getBackgroundImage().copy(), 
+                                              prev_frame.copy(),
                                               curr_frame.copy(),
                                               curr_frame_time,
                                               curr_subframe_gray.copy(),
@@ -623,7 +626,7 @@ def capture_frames():
 def framePostProcessingWorker():
     while True:
         try:
-            last_background_thresh, last_background_image, curr_frame, curr_frame_time, curr_subframe_gray, min_scaled_x, max_scaled_x, min_scaled_y, fps_string, status_color, meta_crossing, last_crossing_time, stream = post_processing_queue.get(block=True)
+            last_background_thresh, last_background_image, prev_frame, curr_frame, curr_frame_time, curr_subframe_gray, min_scaled_x, max_scaled_x, min_scaled_y, fps_string, status_color, meta_crossing, last_crossing_time, stream = post_processing_queue.get(block=True)
 
             # FRAME BEAUTIFICATION
             # Display FPS on the frame
@@ -641,6 +644,7 @@ def framePostProcessingWorker():
                 cv2.addWeighted(overlay, alpha, curr_frame, 1 - alpha, 0, curr_frame)
 
             # Lines for the main frame
+            cv2.line(prev_frame, (META_LINE_X_PX, int(FRAME_HEIGHT*MIN_Y_FACTOR)), (META_LINE_X_PX, int(FRAME_HEIGHT*MAX_Y_FACTOR)), (0, 255, 0), 2)
             cv2.line(curr_frame, (META_LINE_X_PX, int(FRAME_HEIGHT*MIN_Y_FACTOR)), (META_LINE_X_PX, int(FRAME_HEIGHT*MAX_Y_FACTOR)), (0, 255, 0), 2)
             cv2.line(curr_frame, (0, int(FRAME_HEIGHT*MIN_Y_FACTOR)), (FRAME_WIDTH, int(FRAME_HEIGHT*MIN_Y_FACTOR)), (0, 0, 255), 2)
             cv2.line(curr_frame, (0, int(FRAME_HEIGHT*MAX_Y_FACTOR)), (FRAME_WIDTH, int(FRAME_HEIGHT*MAX_Y_FACTOR)), (0, 0, 255), 2)
@@ -660,25 +664,13 @@ def framePostProcessingWorker():
 
             # Build the edges image
             diff = cv2.absdiff(last_background_image, curr_subframe_gray)
-            # diff = cv2.GaussianBlur(diff, (5, 5), 0)
+            diff = cv2.GaussianBlur(diff, (5, 5), 0)
             edges = cv2.Canny(diff, 80, 180)
 
-            # Meta line for the subframes
-            scaled_meta_line_x = int(META_LINE_X_PX * FRAME_SCALING)
-            cv2.line(curr_subframe_gray, (scaled_meta_line_x, 0), (scaled_meta_line_x, int(FRAME_HEIGHT*FRAME_SCALING)), (255, 255, 255), 1)
-            cv2.line(last_background_thresh, (scaled_meta_line_x, 0), (scaled_meta_line_x, int(FRAME_HEIGHT*FRAME_SCALING)), (255, 255, 255), 1)
-            cv2.line(last_background_image, (scaled_meta_line_x, 0), (scaled_meta_line_x, int(FRAME_HEIGHT*FRAME_SCALING)), (255, 255, 255), 1)
-            cv2.line(edges, (scaled_meta_line_x, 0), (scaled_meta_line_x, int(FRAME_HEIGHT*FRAME_SCALING)), (255, 255, 255), 1)
 
-            # Build the mosaic
-            mosaic_width = curr_frame.shape[1] + last_background_image.shape[1] + 1
-            mosaic_height = max(curr_frame.shape[0], 4 * last_background_image.shape[0] + 3)
-            mosaic = np.full((mosaic_height, mosaic_width, 3), 255, dtype=np.uint8)
-            mosaic[0:curr_frame.shape[0], 0:curr_frame.shape[1]] = curr_frame
-
-            # Right column
+            # Right column stack with 1px line in between images and a 1px line meta line
             onepxline = np.full((1, last_background_image.shape[1]), 255, dtype=np.uint8)  # 1-pixel tall, full-width, grayscale
-            right_column = np.vstack([
+            stacked_images = np.vstack([
                 last_background_image,
                 onepxline,
                 curr_subframe_gray,
@@ -687,15 +679,13 @@ def framePostProcessingWorker():
                 onepxline,
                 edges
             ])
-            right_column = cv2.cvtColor(right_column, cv2.COLOR_GRAY2BGR)
-
-            # Whole mosaic
-            mosaic[0:right_column.shape[0], curr_frame.shape[1]+1:] = right_column
+            scaled_meta_line_x = int(META_LINE_X_PX * FRAME_SCALING)
+            cv2.line(stacked_images, (scaled_meta_line_x, 0), (scaled_meta_line_x, stacked_images.shape[0]), (255, 255, 255), 1)
 
 
             # META CROSSING QUEUEING
             if meta_crossing:
-                meta_crossing_queue.put_nowait((curr_frame_time, curr_frame.copy(), mosaic.copy()))
+                meta_crossing_queue.put_nowait((curr_frame_time, prev_frame.copy(), curr_frame.copy(), stacked_images.copy()))
 
 
             # STREAMING QUEUEING
@@ -706,7 +696,7 @@ def framePostProcessingWorker():
     #            pass  # just skip, or log dropped frames
             if stream and not streaming_frame_queue.full():
 #                streaming_frame_queue.put_nowait(curr_frame.copy())
-                streaming_frame_queue.put_nowait(mosaic.copy())
+                streaming_frame_queue.put_nowait(stacked_images.copy())
 
         except Exception as e:
             print(f"Error: {e}")
@@ -721,18 +711,20 @@ def framePostProcessingWorker():
 def processMetaCrossing():
     while True:
         try:
-            meta_crossing_time, meta_crossing_frame, meta_crossing_thres = meta_crossing_queue.get(block=True)
+            meta_crossing_time, meta_crossing_prev, meta_crossing_frame, meta_crossing_stack = meta_crossing_queue.get(block=True)
 
             readable_time = time.strftime("%Y%m%d_%H%M%S", time.localtime(meta_crossing_time))
             print(f"META THREAD: Meta crossing at: {readable_time}")
             # cv2.imwrite(f"jpg/crossing_{readable_time}.jpg", meta_crossing_frame)
 
-            _, jpg_bytes = cv2.imencode('.jpg', meta_crossing_frame)
-            jpg_bytes = jpg_bytes.tobytes()
-            _, jpg_bytes_thres = cv2.imencode('.jpg', meta_crossing_thres)
-            jpg_bytes_thres = jpg_bytes_thres.tobytes()
+            _, jpg_byte_prev = cv2.imencode('.jpg', meta_crossing_prev)
+            jpg_byte_prev = jpg_byte_prev.tobytes()
+            _, jpg_byte_current = cv2.imencode('.jpg', meta_crossing_frame)
+            jpg_byte_current = jpg_byte_current.tobytes()
+            _, jpg_bytes_stack = cv2.imencode('.jpg', meta_crossing_stack)
+            jpg_bytes_stack = jpg_bytes_stack.tobytes()
 
-            pending_events_queue.put_nowait((meta_crossing_time, jpg_bytes, jpg_bytes_thres)) 
+            pending_events_queue.put_nowait((meta_crossing_time, jpg_byte_prev, jpg_byte_current, jpg_bytes_stack)) 
 
         except Exception as e:
             print(f"Error: {e}")
@@ -747,15 +739,16 @@ def processMetaCrossing():
 def publishEvents():
     while True:
         try:
-            meta_crossing_time, meta_crossing_frame_bytes, meta_crossing_thres_bytes = pending_events_queue.get(block=True)
+            meta_crossing_time, meta_crossing_prev_bytes, meta_crossing_frame_bytes, meta_crossing_stack_bytes = pending_events_queue.get(block=True)
             readable_time = time.strftime("%Y%m%d_%H%M%S", time.localtime(meta_crossing_time))
             print(f"EVENTS THREAD: Processing crossing at: {readable_time}")
         except Exception as e:
             print(f"Error: {e}")
 
         files = [
-            ('image', ('mosaic.jpg', meta_crossing_frame_bytes, 'image/jpeg')),
-            ('image', ('frame.jpg', meta_crossing_thres_bytes, 'image/jpeg')),
+            ('image', ('a-frame.jpg', meta_crossing_prev_bytes, 'image/jpeg')),
+            ('image', ('b-frame.jpg', meta_crossing_frame_bytes, 'image/jpeg')),
+            ('image', ('b-stack.jpg', meta_crossing_stack_bytes, 'image/jpeg')),
         ]
 
         # Retry until success
@@ -779,7 +772,7 @@ def publishEvents():
                     print("📝 Body:", e.response.text)
 
                 # Wait before retrying
-                time.sleep(3)
+                time.sleep(10)
 
         time.sleep(0.1)  # Mostly unneeded, but just in case
 
