@@ -325,6 +325,7 @@ def capture_frames():
     prev_frame = None
     curr_frame = None
     prev_frame_time = time.time()
+    meta_crossing_status = 0         # 0 for no, 1 for left to right, 2 for right to left
     last_crossing_time = None
 
     fps_temp_counter = 0
@@ -441,6 +442,7 @@ def capture_frames():
             last_background_thresh = background.apply(curr_subframe_gray)
             if curr_frame_time >= cooldown_until:
                 picam2.set_controls({"AeEnable": False, "AwbEnable": False})    # Disable auto exposure and white balance
+                meta_crossing_status = 0
                 curr_mode = SystemMode.DETECTING
                 print(">>> DETECTING mode after COOL_DOWN finished")
 
@@ -468,44 +470,42 @@ def capture_frames():
                     trigger_cooldown = True
                     continue
 
-
-
-
                 # Detect crossing the line
-                if last_bbox_in_subframe_coordinates:
-#                    prev_x1 = last_bbox_in_subframe_coordinates[0]
-#                    prev_x2 = prev_x1 + last_bbox_in_subframe_coordinates[2]
-#                    new_x1 = new_bbox[0]
-#                    new_x2 = new_x1 + new_bbox[2]
-#                    if prev_x2 < scaled_meta_line_x and new_x2 >= scaled_meta_line_x:
-#                        last_crossing_time = curr_frame_time
-#                        tracker_start_time = curr_frame_time         # Extend the TTL of the tracker
-#                        print(f"--> CROSSING from LEFT to RIGHT")
-#                    elif prev_x1 > scaled_meta_line_x and new_x1 <= scaled_meta_line_x:
-#                        last_crossing_time = curr_frame_time
-#                        tracker_start_time = curr_frame_time         # Extend the TTL of the tracker
-#                        print(f"--> CROSSING from RIGHT to LEFT")
+                if meta_crossing_status == 0 and last_bbox_in_subframe_coordinates:
+                    prev_x1 = last_bbox_in_subframe_coordinates[0]
+                    prev_x2 = prev_x1 + last_bbox_in_subframe_coordinates[2]
+                    new_x1 = new_bbox[0]
+                    new_x2 = new_x1 + new_bbox[2]
+                    possible_crossing_status = 0
+                    if prev_x2 < scaled_meta_line_x and new_x2 >= scaled_meta_line_x:
+                        possible_crossing_status = 1
+                        print(f"--> Possible cross from LEFT to RIGHT")
+                    elif prev_x1 > scaled_meta_line_x and new_x1 <= scaled_meta_line_x:
+                        possible_crossing_status = 2
+                        print(f"--> Possible cross from RIGHT to LEFT")
 
+                    # Check if the object is actually crossing the line at the pixel level
+                    if possible_crossing_status > 0:
+                        # Build the edges image
+                        diff = cv2.absdiff(background.getBackgroundImage(), curr_subframe_gray)
+                        diff = cv2.GaussianBlur(diff, (5, 5), 0)
+                        edges = cv2.Canny(diff, 80, 180)
 
-                    # Build the edges image
-                    diff = cv2.absdiff(background.getBackgroundImage(), curr_subframe_gray)
-                    diff = cv2.GaussianBlur(diff, (5, 5), 0)
-                    edges = cv2.Canny(diff, 80, 180)
+                        x, y, w, h = new_bbox
+                        roi_width = 1  # number of pixels to the left and right of the meta line
+                        roi_x1 = int(max(x, scaled_meta_line_x - roi_width))
+                        roi_x2 = int(min(x + w, scaled_meta_line_x + roi_width))
+                        roi_y1 = int(y)
+                        roi_y2 = int(y + h)
 
-                    x, y, w, h = new_bbox
-                    roi_width = 1  # number of pixels to the left and right of the meta line
-                    roi_x1 = int(max(x, scaled_meta_line_x - roi_width))
-                    roi_x2 = int(min(x + w, scaled_meta_line_x + roi_width))
-                    roi_y1 = int(y)
-                    roi_y2 = int(y + h)
-
-                    roi = edges[roi_y1:roi_y2, roi_x1:roi_x2]
-
-                    edge_pixels = cv2.countNonZero(roi)
-                    if edge_pixels > 2:
-                        last_crossing_time = curr_frame_time
-                        tracker_start_time = curr_frame_time         # Extend the TTL of the tracker
-                        print(f"--> CROSSING from LEFT to RIGHT")
+                        roi = edges[roi_y1:roi_y2, roi_x1:roi_x2]
+                        edge_pixels = cv2.countNonZero(roi)
+                        if edge_pixels > 2:
+                            meta_crossing_status = possible_crossing_status
+                            last_crossing_time = curr_frame_time
+                            tracker_start_time = curr_frame_time         # Extend the TTL of the tracker
+                            meta_crossing_status = 1
+                            print(f"--> CROSSING CONFIRMED: ({edge_pixels} edge pixels)")
 
                 last_bbox_in_subframe_coordinates = new_bbox
 
