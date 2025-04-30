@@ -41,7 +41,7 @@ recalibrate_flag = False
 MOTION_HISTORY_LENGTH = 0           # No contour change with 0. Dilate with 1. Real motion history with >1.
 CROSSING_FLASH_TIME = 0.4           # Seconds
 COOL_DOWN_TIME = 1.0                # Seconds
-TRACKING_TIMEOUT = 5.0              # Max time in the same tracker
+TRACKING_TIMEOUT = 8.0              # Max time in the same tracker
 TRACKING_RESILIENCE_LIMIT = 0.05    # Max time without tracking success before swtiching to DETECTING mode
 DETECT_SHADOWS = False              # For the background substractor config
 TRACKER_TYPE = None
@@ -352,7 +352,7 @@ def capture_frames():
 
 #    picam2.set_controls({
 #        "AeEnable": False,         # Auto exposure OFF
-#        "ExposureTime": 1000,     # Set manually, tune for lighting
+#        "ExposureTime": 1000,      # Set manually, tune for lighting
 #        "AnalogueGain": 1.0,       # Optional: fixed gain
 #        "AwbEnable": False         # Auto white balance OFF (optional)
 #    })
@@ -475,9 +475,10 @@ def capture_frames():
 
                 # Get the direction of the tracked object
                 if last_bbox_in_subframe_coordinates:
-                    if new_bbox[0] > last_bbox_in_subframe_coordinates[0]:
+                    prev_center_x, _ = bbox_center(last_bbox_in_subframe_coordinates)
+                    if center_x > prev_center_x:
                         tracking_direction = 1
-                    elif new_bbox[0] < last_bbox_in_subframe_coordinates[0]:
+                    elif center_x < prev_center_x:
                         tracking_direction = 2
                     else:
                         tracking_direction = 0
