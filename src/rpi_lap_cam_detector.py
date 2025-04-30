@@ -9,6 +9,8 @@ import psutil
 import subprocess
 import requests
 from enum import Enum, auto
+import math
+
 
 
 app = Flask(__name__)
@@ -54,6 +56,7 @@ last_status_result = {}
 
 # Tracker timing & movement
 tracker_start_time = None
+tracker_start_bbox = None
 tracker_last_success_time = None
 last_bbox_in_subframe_coordinates = None
 
@@ -226,6 +229,103 @@ def reset_autofocus():
         print("Autofocus reset triggered.")
     except Exception as e:
         print(f"Error resetting autofocus: {e}")
+
+import math
+
+def pixel_to_world(
+    x_px, y_px,
+    image_width, image_height,
+    fov_h_deg, fov_v_deg,
+    camera_height_m,
+    elevation_angle_deg
+):
+    # Convert FOV and elevation angle to radians
+    fov_h_rad = math.radians(fov_h_deg)
+    fov_v_rad = math.radians(fov_v_deg)
+    alpha_rad = math.radians(elevation_angle_deg)
+
+    # Normalized pixel coordinates [-1, 1]
+    nx = (x_px - image_width / 2) / (image_width / 2)
+    ny = (y_px - image_height / 2) / (image_height / 2)
+
+    # Map to ray direction in camera space
+    tan_h = math.tan(fov_h_rad / 2)
+    tan_v = math.tan(fov_v_rad / 2)
+    dir_cam = [
+        nx * tan_h,  # X direction
+        ny * tan_v,  # Y direction
+        1.0          # Z direction (forward)
+    ]
+
+    # Rotate around X-axis by elevation angle
+    cos_a = math.cos(alpha_rad)
+    sin_a = math.sin(alpha_rad)
+
+    dir_world = [
+        dir_cam[0],
+        dir_cam[1] * cos_a - dir_cam[2] * sin_a,
+        dir_cam[1] * sin_a + dir_cam[2] * cos_a
+    ]
+
+    # Find t such that Z = 0 (intersect with ground plane)
+    if dir_world[2] == 0:
+        raise ValueError("Ray is parallel to the ground plane.")
+
+    t = -camera_height_m / dir_world[2]
+
+    # Compute world coordinates on the road
+    X = t * dir_world[0]
+    Y = t * dir_world[1]
+
+    return (X, Y)
+
+
+def pixel_to_world(
+    x_px, y_px,
+    image_width, image_height,
+    fov_h_deg, fov_v_deg,
+    camera_height_m,
+    elevation_angle_deg
+):
+    # Convert FOV and elevation angle to radians
+    fov_h_rad = math.radians(fov_h_deg)
+    fov_v_rad = math.radians(fov_v_deg)
+    alpha_rad = math.radians(elevation_angle_deg)
+
+    # Normalized pixel coordinates [-1, 1]
+    nx = (x_px - image_width / 2) / (image_width / 2)
+    ny = (y_px - image_height / 2) / (image_height / 2)
+
+    # Map to ray direction in camera space
+    tan_h = math.tan(fov_h_rad / 2)
+    tan_v = math.tan(fov_v_rad / 2)
+    dir_cam = [
+        nx * tan_h,  # X direction
+        ny * tan_v,  # Y direction
+        1.0          # Z direction (forward)
+    ]
+
+    # Rotate around X-axis by elevation angle
+    cos_a = math.cos(alpha_rad)
+    sin_a = math.sin(alpha_rad)
+
+    dir_world = [
+        dir_cam[0],
+        dir_cam[1] * cos_a - dir_cam[2] * sin_a,
+        dir_cam[1] * sin_a + dir_cam[2] * cos_a
+    ]
+
+    # Find t such that Z = 0 (intersect with ground plane)
+    if dir_world[2] == 0:
+        raise ValueError("Ray is parallel to the ground plane.")
+
+    t = -camera_height_m / dir_world[2]
+
+    # Compute world coordinates on the road
+    X = t * dir_world[0]
+    Y = t * dir_world[1]
+
+    return (X, Y)
 
 # === Bounding Box Functions ===
 def bbox_contains(box_a, box_b):
@@ -414,6 +514,7 @@ def capture_frames():
             cooldown_until = curr_frame_time + COOL_DOWN_TIME
             tracker = None
             tracker_start_time = None
+            tracker_start_bbox = None
             tracking_direction = 0
             meta_crossing_status = 0
             last_bbox_in_subframe_coordinates = None
@@ -482,6 +583,23 @@ def capture_frames():
                         tracking_direction = 2
                     else:
                         tracking_direction = 0
+                    
+
+                    # EXPERIMENTAL: GET THE SPEED
+                    # Camera parameters
+                    H = 3.5  # camera 2 meters above the ground
+                    alpha = 30  # 30 degrees downward tilt
+                    fov_h = 66  # Pi cam 3
+                    fov_v = 41  # Pi cam 3
+                    img_w = curr_subframe_width
+                    img_h = curr_subframe_height
+
+                    # Get world positions and print the speed
+                    start_center_x, start_center_y = bbox_center(tracker_start_bbox)
+                    start_world_coords = pixel_to_world(start_center_x, start_center_y+min_scaled_y, img_w, img_h, fov_h, fov_v, H, alpha)
+                    curr_world_coords = pixel_to_world(center_x, center_y+min_scaled_y, img_w, img_h, fov_h, fov_v, H, alpha)
+                    print(f"Speed km/h: {(3.6 * (curr_world_coords[0] - start_world_coords[0]) / (curr_frame_time - tracker_start_time)):.1f}")
+
 
                 # Detect a potential crossing of the line
                 if tracking_direction != 0 and meta_crossing_status == 0:
@@ -506,7 +624,6 @@ def capture_frames():
                         if edge_pixels > 2:
                             meta_crossing_status = tracking_direction
                             last_crossing_time = curr_frame_time
-                            tracker_start_time = curr_frame_time         # Extend the TTL of the tracker
                             print(f"--> CROSSING CONFIRMED WITH {edge_pixels} EDGE PIXELS")
                         else:
                             meta_crossing_status = 0
@@ -580,6 +697,7 @@ def capture_frames():
                     last_bbox_in_subframe_coordinates = cv2.boundingRect(largest_contour)
                     tracker = init_tracker(curr_subframe_gray, last_bbox_in_subframe_coordinates)
                     tracker_start_time = curr_frame_time
+                    tracker_start_bbox = last_bbox_in_subframe_coordinates
                     tracker_last_success_time = curr_frame_time
                     curr_mode = SystemMode.TRACKING
                     print(">>> DETECTION -> TRACKING mode with the largest contour found")
