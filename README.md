@@ -9,6 +9,7 @@ Bugs:
 Little improvements:
 * Line_X as a percentage
 * Use nanotime from capturerequest instead of system time
+* tracking_direction should consider that bbox can grow -> use center
 
 Big improvements:
 * Event retry should be different depending on what:

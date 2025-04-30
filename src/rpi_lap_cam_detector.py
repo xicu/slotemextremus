@@ -325,6 +325,7 @@ def capture_frames():
     prev_frame = None
     curr_frame = None
     prev_frame_time = time.time()
+    tracking_direction = 0           # 0 for none, 1 for left to right, 2 for right to left
     meta_crossing_status = 0         # 0 for no, 1 for left to right, 2 for right to left
     last_crossing_time = None
 
@@ -413,6 +414,8 @@ def capture_frames():
             cooldown_until = curr_frame_time + COOL_DOWN_TIME
             tracker = None
             tracker_start_time = None
+            tracking_direction = 0
+            meta_crossing_status = 0
             last_bbox_in_subframe_coordinates = None
             tracker_last_success_time = None
             trigger_cooldown = False
@@ -470,22 +473,21 @@ def capture_frames():
                     trigger_cooldown = True
                     continue
 
-                # Detect a potential crossing of the line
-                if meta_crossing_status == 0 and last_bbox_in_subframe_coordinates:
-                    prev_x1 = last_bbox_in_subframe_coordinates[0]
-                    prev_x2 = prev_x1 + last_bbox_in_subframe_coordinates[2]
-                    new_x1 = new_bbox[0]
-                    new_x2 = new_x1 + new_bbox[2]
-                    possible_crossing_status = 0
-                    if prev_x2 < scaled_meta_line_x and new_x2 >= scaled_meta_line_x:
-                        possible_crossing_status = 1
-                        print(f"--> Possible cross from LEFT to RIGHT")
-                    elif prev_x1 > scaled_meta_line_x and new_x1 <= scaled_meta_line_x:
-                        possible_crossing_status = 2
-                        print(f"--> Possible cross from RIGHT to LEFT")
+                # Get the direction of the tracked object
+                if last_bbox_in_subframe_coordinates:
+                    if new_bbox[0] > last_bbox_in_subframe_coordinates[0]:
+                        tracking_direction = 1
+                    elif new_bbox[0] < last_bbox_in_subframe_coordinates[0]:
+                        tracking_direction = 2
+                    else:
+                        tracking_direction = 0
 
-                    # Check if the object is actually crossing the line at the pixel level
-                    if possible_crossing_status > 0:
+                # Detect a potential crossing of the line
+                if tracking_direction != 0 and meta_crossing_status == 0:
+                    if new_bbox[0] < scaled_meta_line_x and new_bbox[0]+new_bbox[2] >= scaled_meta_line_x: 
+                        print(f"--> Possible meta crossing...")
+
+                        # Check if the object is actually crossing the line at the pixel level
                         # Build the edges image
                         diff = cv2.absdiff(background.getBackgroundImage(), curr_subframe_gray)
                         diff = cv2.GaussianBlur(diff, (5, 5), 0)
@@ -501,11 +503,13 @@ def capture_frames():
                         roi = edges[roi_y1:roi_y2, roi_x1:roi_x2]
                         edge_pixels = cv2.countNonZero(roi)
                         if edge_pixels > 2:
-                            meta_crossing_status = possible_crossing_status
+                            meta_crossing_status = tracking_direction
                             last_crossing_time = curr_frame_time
                             tracker_start_time = curr_frame_time         # Extend the TTL of the tracker
-                            meta_crossing_status = 1
-                            print(f"--> CROSSING CONFIRMED: ({edge_pixels} edge pixels)")
+                            print(f"--> CROSSING CONFIRMED WITH {edge_pixels} EDGE PIXELS")
+                        else:
+                            meta_crossing_status = 0
+                            print(f"--> Crossing not confirmed({edge_pixels} edge pixels)")
 
                 last_bbox_in_subframe_coordinates = new_bbox
 
@@ -580,7 +584,7 @@ def capture_frames():
                     print(">>> DETECTION -> TRACKING mode with the largest contour found")
                 except Exception as e:
                     last_bbox_in_subframe_coordinates = None
-                    print(f"ERROR: Tracker init failed: {e}!!! Staying in DETECTING mode.")
+                    print(f">>> ERROR: Tracker init failed: {e}!!! Staying in DETECTING mode.")
 
 
         #
@@ -621,7 +625,7 @@ def capture_frames():
         # IMAGE POST-PROCESSING (WHEN NEEDED)
         #
 
-        if (meta_crossing_status > 0 or fps_temp_counter % STREAM_EVERY_X_FRAMES == 0):
+        if (last_crossing_time == curr_frame_time or fps_temp_counter % STREAM_EVERY_X_FRAMES == 0):
             post_processing_queue.put_nowait((background.apply(curr_subframe_gray, learningRate=0),
                                               background.getBackgroundImage().copy(), 
                                               prev_frame.copy(),
@@ -633,7 +637,7 @@ def capture_frames():
                                               min_scaled_y,
                                               fps_string,
                                               status_color,
-                                              meta_crossing_status,
+                                              meta_crossing_status if last_crossing_time == curr_frame_time else 0,
                                               last_crossing_time,
                                               STREAM_EVERY_X_FRAMES > 1 and fps_temp_counter % STREAM_EVERY_X_FRAMES == 0))
 
@@ -667,13 +671,17 @@ def framePostProcessingWorker():
                 overlay = np.full_like(curr_frame, 255)  # White overlay
                 cv2.addWeighted(overlay, alpha, curr_frame, 1 - alpha, 0, curr_frame)
 
-            # Lines for the main frame
-            cv2.line(prev_frame, (META_LINE_X_PX, int(FRAME_HEIGHT*MIN_Y_FACTOR)), (META_LINE_X_PX, int(FRAME_HEIGHT*MAX_Y_FACTOR)), (0, 255, 0), 2)
-            cv2.line(curr_frame, (META_LINE_X_PX, int(FRAME_HEIGHT*MIN_Y_FACTOR)), (META_LINE_X_PX, int(FRAME_HEIGHT*MAX_Y_FACTOR)), (0, 255, 0), 2)
+            # Lines for the prev and main frame
+            cv2.line(prev_frame, (META_LINE_X_PX, int(FRAME_HEIGHT*MIN_Y_FACTOR)), (META_LINE_X_PX, int(FRAME_HEIGHT*MAX_Y_FACTOR)), (0, 255, 0), 1)
+            cv2.line(prev_frame, (0, int(FRAME_HEIGHT*MIN_Y_FACTOR)), (FRAME_WIDTH, int(FRAME_HEIGHT*MIN_Y_FACTOR)), (0, 0, 255), 2)
+            cv2.line(prev_frame, (0, int(FRAME_HEIGHT*MAX_Y_FACTOR)), (FRAME_WIDTH, int(FRAME_HEIGHT*MAX_Y_FACTOR)), (0, 0, 255), 2)
+            cv2.line(prev_frame, (int(min_scaled_x/FRAME_SCALING), int(FRAME_HEIGHT*MIN_Y_FACTOR)), (int(min_scaled_x/FRAME_SCALING), int(FRAME_HEIGHT*MAX_Y_FACTOR)), (0, 0, 255), 1)
+            cv2.line(prev_frame, (int(max_scaled_x/FRAME_SCALING), int(FRAME_HEIGHT*MIN_Y_FACTOR)), (int(max_scaled_x/FRAME_SCALING), int(FRAME_HEIGHT*MAX_Y_FACTOR)), (0, 0, 255), 1)
+            cv2.line(curr_frame, (META_LINE_X_PX, int(FRAME_HEIGHT*MIN_Y_FACTOR)), (META_LINE_X_PX, int(FRAME_HEIGHT*MAX_Y_FACTOR)), (0, 255, 0), 1)
             cv2.line(curr_frame, (0, int(FRAME_HEIGHT*MIN_Y_FACTOR)), (FRAME_WIDTH, int(FRAME_HEIGHT*MIN_Y_FACTOR)), (0, 0, 255), 2)
             cv2.line(curr_frame, (0, int(FRAME_HEIGHT*MAX_Y_FACTOR)), (FRAME_WIDTH, int(FRAME_HEIGHT*MAX_Y_FACTOR)), (0, 0, 255), 2)
-            cv2.line(curr_frame, (int(min_scaled_x/FRAME_SCALING), int(FRAME_HEIGHT*MIN_Y_FACTOR)), (int(min_scaled_x/FRAME_SCALING), int(FRAME_HEIGHT*MAX_Y_FACTOR)), (0, 0, 255), 2)
-            cv2.line(curr_frame, (int(max_scaled_x/FRAME_SCALING), int(FRAME_HEIGHT*MIN_Y_FACTOR)), (int(max_scaled_x/FRAME_SCALING), int(FRAME_HEIGHT*MAX_Y_FACTOR)), (0, 0, 255), 2)
+            cv2.line(curr_frame, (int(min_scaled_x/FRAME_SCALING), int(FRAME_HEIGHT*MIN_Y_FACTOR)), (int(min_scaled_x/FRAME_SCALING), int(FRAME_HEIGHT*MAX_Y_FACTOR)), (0, 0, 255), 1)
+            cv2.line(curr_frame, (int(max_scaled_x/FRAME_SCALING), int(FRAME_HEIGHT*MIN_Y_FACTOR)), (int(max_scaled_x/FRAME_SCALING), int(FRAME_HEIGHT*MAX_Y_FACTOR)), (0, 0, 255), 1)
 
             # Bounding box for the main frame
             if last_bbox_in_subframe_coordinates:
@@ -681,7 +689,7 @@ def framePostProcessingWorker():
                 y_full_frame = int((last_bbox_in_subframe_coordinates[1]+min_scaled_y)/FRAME_SCALING)
                 w_full_frame = int(last_bbox_in_subframe_coordinates[2]/FRAME_SCALING)
                 h_full_frame = int(last_bbox_in_subframe_coordinates[3]/FRAME_SCALING)
-                cv2.rectangle(curr_frame, (x_full_frame, y_full_frame), (x_full_frame + w_full_frame, y_full_frame + h_full_frame), status_color, 2)
+                cv2.rectangle(curr_frame, (x_full_frame, y_full_frame), (x_full_frame + w_full_frame, y_full_frame + h_full_frame), status_color, 1)
                 cv2.putText(curr_frame, "Movida", (x_full_frame, y_full_frame - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, status_color, 1)
 
@@ -787,7 +795,6 @@ def publishEvents():
                     files=files,
                     timeout=5  # good to have a timeout to avoid hanging forever
                 )
-                response = requests.post()
                 response.raise_for_status()
                 print("✅ Event posted successfully")
                 break
