@@ -426,6 +426,7 @@ def capture_frames():
     curr_frame = None
     prev_frame_time = time.time()
     tracking_direction = 0           # 0 for none, 1 for left to right, 2 for right to left
+    tracked_speed_kmh = 0
     meta_crossing_status = 0         # 0 for no, 1 for left to right, 2 for right to left
     last_crossing_time = None
 
@@ -516,6 +517,7 @@ def capture_frames():
             tracker_start_time = None
             tracker_start_bbox = None
             tracking_direction = 0
+            tracked_speed_kmh = 0
             meta_crossing_status = 0
             last_bbox_in_subframe_coordinates = None
             tracker_last_success_time = None
@@ -598,7 +600,8 @@ def capture_frames():
                     start_center_x, start_center_y = bbox_center(tracker_start_bbox)
                     start_world_coords = pixel_to_world(start_center_x, start_center_y+min_scaled_y, img_w, img_h, fov_h, fov_v, H, alpha)
                     curr_world_coords = pixel_to_world(center_x, center_y+min_scaled_y, img_w, img_h, fov_h, fov_v, H, alpha)
-                    print(f"Speed km/h: {(3.6 * (curr_world_coords[0] - start_world_coords[0]) / (curr_frame_time - tracker_start_time)):.1f}")
+                    tracked_speed_kmh = 3.6 * (curr_world_coords[0] - start_world_coords[0]) / (curr_frame_time - tracker_start_time)
+                    #print(f"Speed km/h: {tracked_speed_kmh:.1f}")
 
 
                 # Detect a potential crossing of the line
@@ -756,6 +759,7 @@ def capture_frames():
                                               min_scaled_y,
                                               fps_string,
                                               status_color,
+                                              abs(tracked_speed_kmh),
                                               meta_crossing_status if last_crossing_time == curr_frame_time else 0,
                                               last_crossing_time,
                                               STREAM_EVERY_X_FRAMES > 1 and fps_temp_counter % STREAM_EVERY_X_FRAMES == 0))
@@ -773,7 +777,7 @@ def capture_frames():
 def framePostProcessingWorker():
     while True:
         try:
-            last_background_thresh, last_background_image, prev_frame, curr_frame, curr_frame_time, curr_subframe_gray, min_scaled_x, max_scaled_x, min_scaled_y, fps_string, status_color, meta_crossing, last_crossing_time, stream = post_processing_queue.get(block=True)
+            last_background_thresh, last_background_image, prev_frame, curr_frame, curr_frame_time, curr_subframe_gray, min_scaled_x, max_scaled_x, min_scaled_y, fps_string, status_color, tracked_speed_kmh, meta_crossing, last_crossing_time, stream = post_processing_queue.get(block=True)
 
             # FRAME BEAUTIFICATION
             # Display FPS on the frame
@@ -809,7 +813,7 @@ def framePostProcessingWorker():
                 w_full_frame = int(last_bbox_in_subframe_coordinates[2]/FRAME_SCALING)
                 h_full_frame = int(last_bbox_in_subframe_coordinates[3]/FRAME_SCALING)
                 cv2.rectangle(curr_frame, (x_full_frame, y_full_frame), (x_full_frame + w_full_frame, y_full_frame + h_full_frame), status_color, 1)
-                cv2.putText(curr_frame, "Movida", (x_full_frame, y_full_frame - 10),
+                cv2.putText(curr_frame, f"{tracked_speed_kmh:.1f} Km/h", (x_full_frame, y_full_frame - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, status_color, 1)
 
 
