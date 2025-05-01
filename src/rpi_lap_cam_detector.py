@@ -280,53 +280,6 @@ def pixel_to_world(
     return (X, Y)
 
 
-def pixel_to_world(
-    x_px, y_px,
-    image_width, image_height,
-    fov_h_deg, fov_v_deg,
-    camera_height_m,
-    elevation_angle_deg
-):
-    # Convert FOV and elevation angle to radians
-    fov_h_rad = math.radians(fov_h_deg)
-    fov_v_rad = math.radians(fov_v_deg)
-    alpha_rad = math.radians(elevation_angle_deg)
-
-    # Normalized pixel coordinates [-1, 1]
-    nx = (x_px - image_width / 2) / (image_width / 2)
-    ny = (y_px - image_height / 2) / (image_height / 2)
-
-    # Map to ray direction in camera space
-    tan_h = math.tan(fov_h_rad / 2)
-    tan_v = math.tan(fov_v_rad / 2)
-    dir_cam = [
-        nx * tan_h,  # X direction
-        ny * tan_v,  # Y direction
-        1.0          # Z direction (forward)
-    ]
-
-    # Rotate around X-axis by elevation angle
-    cos_a = math.cos(alpha_rad)
-    sin_a = math.sin(alpha_rad)
-
-    dir_world = [
-        dir_cam[0],
-        dir_cam[1] * cos_a - dir_cam[2] * sin_a,
-        dir_cam[1] * sin_a + dir_cam[2] * cos_a
-    ]
-
-    # Find t such that Z = 0 (intersect with ground plane)
-    if dir_world[2] == 0:
-        raise ValueError("Ray is parallel to the ground plane.")
-
-    t = -camera_height_m / dir_world[2]
-
-    # Compute world coordinates on the road
-    X = t * dir_world[0]
-    Y = t * dir_world[1]
-
-    return (X, Y)
-
 # === Bounding Box Functions ===
 def bbox_contains(box_a, box_b):
     if box_a is None:
