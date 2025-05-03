@@ -3,7 +3,6 @@ Lap detector for Slotem Extremus
 
 Bugs:
 * STREAM_SCALING is not used
-* Clean                 # Detect a potential crossing of the line
 
 Little improvements:
 * Line_X as a percentage
@@ -12,7 +11,7 @@ Little improvements:
 * Support disable streaming
 
 Big improvements:
-* Keep a circular queue of frames and create a total of three threads/processes:
+* Keep a circular queue of frames and create a total of three threads/processes (but this will have to wait to the C++ port, as the multithreading/processing in Python is quite poor):
   * First process to capture all the frames, resize them, split them, and put them in the queue
   * Second thread to detect and track, considering that:
     * If we're detecting or tracking, we can get the latest frame
