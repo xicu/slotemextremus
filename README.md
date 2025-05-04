@@ -84,6 +84,21 @@ Also, the current setup reduces the chances of false positives virtually to zero
 
 ## What challenges did you find?
 
+### CPU Throttling
+
+I started the prototype with a naked Raspberry. Sometimes, the streaming was not good, but you can't know what the reason is. It could be:
+* Wrong logic, like detecting too many contours because the background is polluted.
+* Network issues.
+* Race conditions or other problems with your threads, etc.
+
+I found that the Pi 4 needs cooling for these activities, yes. I learnt that the CPU can go down from 1.5 GHz to 600 MHz when the temperature reaches 85 degrees. And I learnt it the hard way: by experimenting.
+
+Ultimately, I learnt that monitoring and observability are a must, even for a tiny project like this. Why? Because despite being the CPU throttling my main performance issue, I actually had more (like thread starvation), and I was overlooking them until I solved the temperature problem (with a large passive aluminium heatsink).
+
+In brief, whenever you are going to work on a high-demanding project (yeah, this is high-demanding for the hardware we're using), be sure that you have the right tools to monitor what's going on.
+
+ ![System information that is shown in the embedded web server](assets/images/systemstatus.png)
+
 ### Multi-threading
 
 TLDR multi-threading in Python is a joke, and I only found it the hard way, when splitting the execution logic across different threads didn't scale as expected.
