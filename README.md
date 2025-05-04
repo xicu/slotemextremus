@@ -103,6 +103,15 @@ Overengineered? Maybe, but it was fun, challenging and insightful, so I'm happy 
 
 ### The auto-exposure complication
 
+Sometimes, the trackers fail. You never know whether it is because the object dissapeared, or whatever. What you do is to fall back to detect contours again.
+
+One thing that used to happen very often was that when the cars were very large (typically, vans), the tracker would fail and the contour detection would struggle to stay above 10 FPS. Why that? I had no idea...
+
+I started to stream not the real video but the internal images instead. I noticed that sometimes the detected contours were not just around the cars or the vans, but everywhere, so the contour processing logic was processing dozens of wrong contours. It was like the background was broken when large cars were in the frame, and I couldn't get why.
+
+It didn't make sense, and I was lost for a lot of time until, out of the blue, I found the reason: when a large object came into the frame, chances were that the whole image would be either lighter or darker, and the camera auto-exposure was making the image either darker or lighter to compensate. When the image was all of a sudden either lighter or darker, the contour detection was finding deltas compared to the background everywhere! And chaos happened.
+
+The fix was simple: I lock the exposure when the tracking of a car begins, and I re-enable it when the car leaves the frame. So easy to explain, so easy to fix, so difficult to spot...
 
 
 ## What about the future?
