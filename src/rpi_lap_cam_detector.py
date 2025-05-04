@@ -33,7 +33,8 @@ MIN_COUNTOUR_AREA = 0.02    # Minimum area of contour to consider for tracking, 
 STREAM_QUALITY = 35
 STREAM_EVERY_X_FRAMES = 3   # It will stream only every {x} frames
 STREAM_SCALING = 0.4
-streaming_frame_queue = queue.Queue(maxsize=2)  # smoother than a lock
+streaming_frame_queue_main = queue.Queue(maxsize=2)  # smoother than a lock
+streaming_frame_queue_extra = queue.Queue(maxsize=2)  # smoother than a lock
 
 # === Globals ===
 trigger_cooldown = False
@@ -76,8 +77,16 @@ HTML_PAGE = """
 <title>Slotem Extremus Rpi</title>
 <h1>Slotem Extremus Raspberry Pi detector</h1>
 
-<div style="width: 100%; overflow: hidden;">
-  <img src="{{ url_for('video_feed') }}" style="max-width: 100%; height: auto;" />
+<div style="display: flex; width: 100%; height: auto;">
+  <!-- Main video stream (responsive) -->
+  <div style="flex: 1; overflow: hidden;">
+    <img src="{{ url_for('video_feed_main') }}" style="width: 100%; height: auto;" />
+  </div>
+
+  <!-- Extra video stream (fixed width) -->
+  <div style="width: {{scaled_width}}px; overflow: hidden;">
+    <img src="{{ url_for('video_feed_extra') }}" style="width: 100%; height: auto;" />
+  </div>
 </div>
 
 <div style="display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 20px;">
@@ -802,9 +811,10 @@ def framePostProcessingWorker():
     #            frame_queue.put_nowait(frame.copy())
     #        except queue.Full:
     #            pass  # just skip, or log dropped frames
-            if stream and not streaming_frame_queue.full():
-#                streaming_frame_queue.put_nowait(curr_frame.copy())
-                streaming_frame_queue.put_nowait(stacked_images.copy())
+            if stream and not streaming_frame_queue_main.full():
+                streaming_frame_queue_main.put_nowait(curr_frame.copy())
+            if stream and not streaming_frame_queue_extra.full():
+                streaming_frame_queue_extra.put_nowait(stacked_images.copy())
 
         except Exception as e:
             print(f"Error: {e}")
@@ -890,11 +900,29 @@ def publishEvents():
 
 
 # === Flask Routes ===
-def generate_stream():
+def generate_stream_main():
     try:
         while True:
             try:
-                output_frame_copy = streaming_frame_queue.get(timeout=3)
+                output_frame_copy = streaming_frame_queue_main.get(timeout=5)
+            except queue.Empty:
+                continue
+
+            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), STREAM_QUALITY]
+            _, buffer = cv2.imencode('.jpg', output_frame_copy, encode_param)
+            frame = buffer.tobytes()
+
+            yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+    except GeneratorExit:
+        print("Client disconnected from video stream")
+    except Exception as e:
+        print(f"Streaming error: {e}")
+
+def generate_stream_extra():
+    try:
+        while True:
+            try:
+                output_frame_copy = streaming_frame_queue_extra.get(timeout=5)
             except queue.Empty:
                 continue
 
@@ -950,6 +978,7 @@ def index():
         min_y=int(MIN_Y_FACTOR*100),
         max_y=int(MAX_Y_FACTOR*100),
         width=int(FRAME_WIDTH),
+        scaled_width=int(FRAME_WIDTH*FRAME_SCALING),
         cpu_usage="Calculating...",
         cpu_temp="N/A",
         cpu_freq="0",
@@ -957,9 +986,14 @@ def index():
         throttling_status="Checking...",
         fps_summary=fps_global_string)
 
-@app.route('/video_feed')
-def video_feed():
-    return Response(generate_stream(),
+@app.route('/video_feed_main')
+def video_feed_main():
+    return Response(generate_stream_main(),
+                    mimetype='multipart/x-mixed-replace; boundary=frame')
+
+@app.route('/video_feed_extra')
+def video_feed_extra():
+    return Response(generate_stream_extra(),
                     mimetype='multipart/x-mixed-replace; boundary=frame')
 
 @app.route('/trigger_cooldown')
