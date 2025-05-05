@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html>
+<body>
+    <script>
+        const ws = new WebSocket('ws://localhost:8080/ws');
+        
+        ws.onmessage = function(event) {
+            console.log('Received ID:', event.data);
+        };
+
+        // Test after 2 seconds
+        setTimeout(() => {
+            fetch('/lap/test123', { method: 'POST' })
+                .then(res => res.text())
+                .then(console.log)
+                .catch(console.error);
+        }, 2000);
+    </script>
+</body>
+</html>

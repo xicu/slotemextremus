@@ -1,0 +1,30 @@
+.App {
+  text-align: center;
+  padding: 20px;
+  font-family: "Zen Dots", sans-serif;
+  background: linear-gradient(to bottom, #000428, #004e92);
+  color: #fff;
+}
+
+.chrono-container {
+  display: flex;
+  justify-content: center;
+  gap: 50px;
+  margin-top: 50px;
+}
+
+.chrono {
+  background: #333;
+  color: #0f0;
+  padding: 20px 40px;
+  border-radius: 10px;
+  font-size: 2.5em;
+  font-family: monospace;
+  font-style: normal;
+}
+
+.chrono h2 {
+  margin: 0;
+  padding: 10px;
+  min-width: 200px;
+}
