@@ -41,15 +41,18 @@ function App() {
       const message = e.data;
       const now = Date.now();
 
-      if (message === '1') {
-        setHistory((prev) => [{ chrono1: chrono1Ref.current, chrono2: null }, ...prev]); // Use ref for chrono1Time
-        setStart1(now);
-        setChrono1Time(0);
-      } else if (message === '2') {
-        setHistory((prev) => [{ chrono1: null, chrono2: chrono2Ref.current }, ...prev]); // Use ref for chrono2Time
-        setStart2(now);
-        setChrono2Time(0);
-      }
+    setHistory((prev) => [{ chrono1: chrono1Ref.current, chrono2: null }, ...prev]); // Use ref for chrono1Time
+    setStart1(now);
+    setChrono1Time(0);
+    // if (message === '1') {
+    //     setHistory((prev) => [{ chrono1: chrono1Ref.current, chrono2: null }, ...prev]); // Use ref for chrono1Time
+    //     setStart1(now);
+    //     setChrono1Time(0);
+    //   } else if (message === '2') {
+    //     setHistory((prev) => [{ chrono1: null, chrono2: chrono2Ref.current }, ...prev]); // Use ref for chrono2Time
+    //     setStart2(now);
+    //     setChrono2Time(0);
+    //   }
     };
 
     return () => {
