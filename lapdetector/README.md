@@ -35,15 +35,10 @@ Rather than refactoring its Python code to make it production quality, I aim to 
 
 ## But... why?
 
-Well... why not? The history began around 2008, when some friends and I were missing a good lap counter for our slot car races.
-
-We had a really old Windows .exe that used the parallel port from some really old laptop to detect changes in a photocell previously installed in a couple of holes under a piece of the track. Not ideal, but very reliable.
-
-Parallel ports were back then already a thing of the past, so we wanted something better. We considered Arduino as a very good idea to read photocells and even to implement speedtraps. I always wanted to do it based on computer vision though, using just a webcam and OpenCV.
-
-In 2025 (not kidding - this was in my to-do for 17 years...), I decided to make it happen. Instead of a webcam, I wanted to get a Pi a chance (everybody has one at home), as it would be cool to have a completely wireless device (when powered) monitoring the laps.
-
-I started with this in March 2025. I wanted it to be ready by September 2026, when Lena & Xana would turn 6, so we could play slot together. I enjoyed it so much that the MVP was ready in less than two months (a milestone in software engineering: a project that happened actually sooner than expected).
+Well... why not? You can find an introduction to the project in the [master README file](/slotemextremus/README.md), so let's focus on this component. In brief, instead of a fully featured PC and a webcam (as planned in 2008), I wanted to get a Pi a chance because:
+* Everybody has one at home.
+* It would be cool to have a completely wireless device (when on batteries) monitoring the laps.
+* And also because it sounds challenging, to be honest.
 
 
 ## How does it work?
@@ -165,9 +160,10 @@ Below there's a mix of ideas, bugs, and random notes to use as inspiration in th
 * Support disable streaming
 
 ### Big improvements
-* Event retry should be different depending on what:
+* Event publishing retry should be different depending on what:
   * Very fast for metadata
   * Quite slow for images
+* Choose left to right, right to left, or both trackings (when only one side, countour detection will happen only on one side of the meta)
 * Metadata and images should fly in different pipelines (and we shouldn't try images before succeeding with metadata)
 * When tracking, do it only within a ROI for efficiency. Two parameters are needed: horizontal jump and vertical jump.
 * Adjust the whole background thing. We spent a lot of time on this and it happened to be an issue with the autoexposure!
