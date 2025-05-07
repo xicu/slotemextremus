@@ -18,7 +18,7 @@ The camera is expected to be perpendicular to the track. It doesn't matter if it
 
 To enjoy this piece of software, you'll need:
 * A **Raspberry Pi 4** (although it should also work on a 3 with enough FPS, and I aim to make it work even on a Zero 2 when ported to C++) using a regular Raspberry Pi OS (Lite should be enough, and even recommended).
-* A **Raspberry Pi Camera Module 3**. In theory, any other camera compatible with the PiCamera2 library should work, and with very little effort it should also work with any camera supported by OpenCV.
+* A **Raspberry Pi Camera Module 3**. In theory, any other camera compatible with the PiCamera2 library should work, and with very little effort it should also work with any camera supported by OpenCV. I tend to use percentages rather than absolute pixel counts, and times rather than frames in order to keep all the logic compatible with different combination of resolution and FPS.
 
 
 ## Status of the Project
@@ -39,18 +39,31 @@ Well... why not? You can find an introduction to the project in the [master READ
 * Everybody has one at home.
 * It would be cool to have a completely wireless device (when on batteries) monitoring the laps.
 * And also because it sounds challenging, to be honest.
+* I needed some sort of completitude feeling (that thing was in my TO-DO for too long).
 
 
 ## How does it work?
 
 I could nerd a lot about this, because I enjoyed it to the fullest. I will keep it very simple (mostly for my future me, because I tend to forget things easily):
+
 1. You capture frames at a fast pace with the Picamera2 library. Since all the process that follows will be exhausting for the CPU, you scale those frames down with OpenCV (you don't capture them in lo-res because you want the hi-res for the photo finish, of course) and you convert them to grayscale. You also trim according to some threasholds and so (there's no point in waisting CPU time detecting movement out of the track).
+
 1. You need a background. Yeah, basically you need a reference against which you evaluate if there are changes (ie. cars passing by). I made it self-calibrating by the way.
+
 1. You need to detect changes compared to that background. Specifically, OpenCV will find contours. What you do is to filter them out and act only on those bigger than certain threshold. This and the next step are those requiring the most resources of the Pi.
+
 1. When you get a good contour, you try to track it. OpenCV has tools for this as well, and you have to choose them wisely. There're big differences in performance depending on the track you use, and depending on the area you track. Fine tuning the background building, the contour detection and the tracking, as well as building heuristics to reduce the load on your CPU, are an art in itself.
+
 1. When tracking, you check whether the object leaves the frame, or whether it crosses the meta. To understand whether the car is crossing the meta, you check the difference between the frame and the background in the meta area, as the bounding box of the tracker is always bigger than the car (more on this on _the parallax problem_). When the difference goes beyond certain threshold, you trigger the appropriate event. The most reliable and accurate (to the pixel) way to do this is to actually use canny edge detection on the delta between the frame and the background. If the found edges are over the meta line, then you have a lap.
+
 1. You stream everything - that's the only proper way to understand what's going on with your system. You of course do this in a different thread, as the main loop is already super heavy and can't hold any more load (unless you want to see your FPS dropping...).
+
 1. You need some configuration to happen real-time, so there's a tiny embedded web server to move the meta line and a couple of thresholds.
+
+There are quite some heuristics to get things optimized inthe limited resources of the Pi. Just to name a few:
+* Frames are captured at a nice resolution to have cool photo finishes, but the processing happens with a grayscale and low resolution version of those.
+* I don't stream all the frames but a one every three or four (streaming means converting to jpeg, besides the streaming overhead itself).
+* I have some vertical bands to ensure that I don't process the pixels that are above or beyond the road, etc.
 
 
 ## Why do you need to detect and track contours? Why not just the edge contour over the meta line?
@@ -151,21 +164,22 @@ The question, then, is _what do I want to learn next?_. The answers:
 Below there's a mix of ideas, bugs, and random notes to use as inspiration in the future.
 
 ### Bugs
-* STREAM_SCALING is not used
+
+* STREAM_SCALING is not used (and probably more variables as well...)
 
 ### Little improvements
+
 * Line_X as a percentage
 * Use nanotime from capturerequest instead of system time
-* Show two streamings (real frame, processed images)
 * Support disable streaming
 
-### Big improvements
-* Event publishing retry should be different depending on what:
-  * Very fast for metadata
-  * Quite slow for images
-* Choose left to right, right to left, or both trackings (when only one side, countour detection will happen only on one side of the meta)
-* Metadata and images should fly in different pipelines (and we shouldn't try images before succeeding with metadata)
-* When tracking, do it only within a ROI for efficiency. Two parameters are needed: horizontal jump and vertical jump.
-* Adjust the whole background thing. We spent a lot of time on this and it happened to be an issue with the autoexposure!
-* Support the scenario when a car jumps the meta (ie. canny never overlaps the line)
-* Acurate timing of meta crossing (we would need to interpolate between pre and post-meta)
+### Bigger improvements
+
+* Metadata and images should fly in different pipelines (and we shouldn't try images before succeeding with metadata):
+  * It has to be very fast for metadata, so the lap events go fast to the backend and are propagated quickly
+  * It can be slower for images, as we can wait a couple of seconds to view the pictures
+* Choose left to right, right to left, or both trackings (when only one side, countour detection will happen only on one side of the meta). Now it's both.
+* When tracking, do it only within a ROI for efficiency. Two parameters are needed: horizontal jump and vertical jump. That way, the tracking algorithm won't be that heavy on the CPU.
+* Adjust the whole background thing. We spent a lot of time on this and it happened to be an issue with the autoexposure! Now it's time to readjust it, and maybe to make it lighter (with less history) as well.
+* Support the scenario when a car jumps the meta (ie. canny never overlaps the line).
+* Acurate timing of meta crossing (we would need to interpolate between pre and post-meta images - now we get the time from the post).

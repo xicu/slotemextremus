@@ -56,12 +56,16 @@ WIPMVS - that's it. _Work In Progress Minimum Viable Skeleton_, I would say, bec
 * A real backend, including its data model, its endpoints, its business logic and its storage solution.
 * A real frontend, including a nice UX that allows me to eventually enjoy the races.
 
+#### Things that would be nice to have:
+* Port the lap detector to C++ to boost its efficiency.
+* Use AI (YOLO?) somehow sometimes somewhere for something.
+
 
 ## How does it work?
 
 Since this was all about learning and having fun, I set a number of preconditions upfront, which somehow act as NFRs (non-functional requirements):
 * I wanted to do the lap detection on a Raspberry Pi with a camera. Specifically, I had a 4 at home, so that was the one to go. Ideally, this should run on a 3 (I have two of those) and even in a Zero 2 (to make it super compact and battery opperated).
-* I didn't want to use AI for motion detection and tracking.
+* I didn't want to use AI for motion detection and tracking. More on that below.
 * I accept the slight time difference between the clocks of the different machines. I consider that the [Network Time Protocol](https://en.wikipedia.org/wiki/Network_Time_Protocol) is good enough for this project. In case of doubt, it's the Pi the one owning the master clock. Please note that Raspberry OS uses `systemd-timesyncd` instead of `ntp` by default, so you might want to enable the latter with `sudo apt install ntp`.
 * Everything had to be wireless and as platform independent as possible (except the Pi for the lap detector).
 * I wanted to build the lap detector using some sort of modern, efficient and new (to me) technology. First option was Rust, although this was soon discarded because libraries and bindings were either C++ or Python.
@@ -109,9 +113,13 @@ It will use React + Typescript + Node. Those are the current industry standards 
 
 ## Thoughts on AI?
 
-Very, very positive. Having a companion that will solve your problems (quite often) is priceless. This hobby project wouldn't have been be a working skeleton in only two months without these new tools.
+Very, very positive. Having a companion that will solve your problems (quite often) is priceless. This hobby project wouldn't have been a working skeleton in only two months without these new tools.
 
-However, I'm also getting a bunch of good learnings while doing this...
+The main win? The frustration-less feeling. Those bugs like black holes, where you spent hours and hours with little to none progress, and you ended up asking in a forum begging for tips, are a thing of the past. Ask Copilot, copy&paste your code in ChatGPT, have a chat with DeepSeek+DeepThink... you name it - what matters is that you will never feel blocked any more, at very least they will give you new ideas. That's just awesome.
+
+To me, it's like all these LLMs and agents have continued the worked that Google dropped around 2010. In the early 2000's, Google was just the way to navigate your issues, your source of knowledge. Later, they changed their business model and rather than focusing on providing meaningful answers, they preferred to give you whatever else. For now, LLMs are focusing on searching, aggregating, and summarizing valuable information for you, which is awesome.
+
+However, not everything has been so perfect. I'm also getting a bunch of good learnings while doing this...
 
 ### Your AI agent tries to please you
 
@@ -119,7 +127,7 @@ The better the prompt, the better the output. The problem is that we humans will
 
 ### Your AI agent is more narrow-minded than you wish
 
-See all the unneeded? work on the motion detection and tracking in the lap detector component for more details.
+See all the unneeded? work on the motion detection and tracking in the lap detector component for more details. I think that this problem is related to the previous one: they get some kind of momentum based on your previous prompts, so you implicitely make them follow your lead, at least partially.
 
 ### Your AI agent will hide critical aspects of the solutions
 
@@ -128,6 +136,10 @@ I knew that my lap detector had to be multi-threaded. The AI agent confirmed it.
 ### The code is crap
 
 I'm sorry, but it's like that. There's no linter or AI that can fix the code of an AI.
+
+### I truly believe you need to be a developer first
+
+An AI agent is a tool that needs to be challenged in order to get the best out of it. Otherwise, you'll be fooled (I would refer again to my microtrauma with Python threads in the lap detector...). If you haven't faced and solved real developer problems before using these tools, I think you'll be lacking some important foundation. It's like using languages with garbage collector without understanding how operating systems manage memory: yes, you'll write stuff faster, but the quality will be subaverage and I seriously doubt you'll have the capacity to understand and solve problems down the road.
 
 
 ## What's next?
