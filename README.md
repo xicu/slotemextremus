@@ -69,7 +69,7 @@ Since this was all about learning and having fun, I set a number of precondition
 * I accept the slight time difference between the clocks of the different machines. I consider that the [Network Time Protocol](https://en.wikipedia.org/wiki/Network_Time_Protocol) is good enough for this project. In case of doubt, it's the Pi the one owning the master clock. Please note that Raspberry OS uses `systemd-timesyncd` instead of `ntp` by default, so you might want to enable the latter with `sudo apt install ntp` if you want a more accurate timing.
 * Everything had to be wireless and as platform independent as possible (except the Pi for the lap detector).
 * I wanted to build the lap detector using some sort of modern, efficient and new (to me) technology. First option was Rust, although this was soon discarded because libraries and bindings were either C++ or Python.
-* I wanted to build a backend using some sort of modern, scalable and new (to me) technology. First option would be Go.
+* I wanted to build a backend using some sort of modern, scalable and new (to me) technology. Go or Rust would be the way to go.
 * I wanted to build a frontend using some sort of modern and new (to me) technology. First option would be Typescript + React.
 
 Let's explore a bit more the scope and details of each component.
@@ -95,7 +95,11 @@ An MVP would mean that:
 * It allows clients to (re)connect at any time of the race, and they'll get the full snapshot of it.
 * Stretch: Races are stored locally and can be browsed by the frontend.
 
-It will use Go. There's no other strong reason that to learn about it.
+It will use either Go or Rust. Even though the workload is going to be really low, and the frontend technology (Typescript) or the lap detector one (Python, C++) could be reused for simplicity, I still want to learn something new. Both Go and Rust are:
+* Truly multi-threaded.
+* Modern and well supported.
+* Efficient and compiled, with no need for a runtime (they would allow me to be run in the same Pi than the lap detector).
+* Somehow challening, as they lack classes, which are the foundation I built my development skills on.
 
 ### Frontend
 
