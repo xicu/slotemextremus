@@ -42,6 +42,8 @@ WIPMVS - that's it. _Work In Progress Minimum Viable Skeleton_, I would say, bec
 * It's viable. It definitely is.
 * It's a mix between an MVP (for the lap detector) and a skeleton (for the frontend and backend).
 
+Do you want to see it in action? Have a look at it [here](https://vimeo.com/1088439424/9c021f35b8) (it's not the latest version - just the first iteration with everything connected).
+
 ### Things that are done
 
 * This repo is set.
@@ -56,7 +58,8 @@ WIPMVS - that's it. _Work In Progress Minimum Viable Skeleton_, I would say, bec
 * A real backend, including its data model, its endpoints, its business logic and its storage solution.
 * A real frontend, including a nice UX that allows me to eventually enjoy the races.
 
-#### Things that would be nice to have:
+### Things that would be nice to have
+
 * Port the lap detector to C++ to boost its efficiency.
 * Use AI (YOLO?) somehow sometimes somewhere for something.
 
