@@ -18,7 +18,7 @@ Besides building ridiculously large tracks, we all understood the need for a bet
 
 ![Windows 95 powered](assets/images/IMG_1525.JPG "Windows 95 powered")
 
-Back in 2009, I wanted to make it with a native app and computer vision (with OpenCV). 2^8 years later (life happened in between, including moving to another country, Lena & Xana being born, etc), I made it happen with a Raspberry Pi (more on this in the [README of the lapdetector](lapdetector/README.md)).
+Back in 2009, I wanted to make it with a native app and computer vision (with OpenCV). 2^4 years later (life happened in between, including moving to another country or Lena & Xana being born, just to mention a few), I made it happen with a Raspberry Pi (more on this in the [README of the lapdetector](lapdetector/README.md)).
 
 Ultimately, this is all about learning and having fun with it. That's it.
 
@@ -106,7 +106,7 @@ It will use either Go or Rust. Even though the workload is going to be really lo
 
 ### Frontend
 
-It takes care of showing the status of the ongoing race and, optionally, to browse old races, configure drivers, etc. It has to offer some sort of real time feeling (ie. let's show a working chronograph, even though it might not be perfectly synchronized with the race clock).
+It takes care of showing the status of the ongoing race and, optionally, browsing old races, configuring drivers, etc. It has to offer some sort of real time feeling (ie. let's show a working chronograph, even though it might not be perfectly synchronized with the race clock - it's all about having fun).
 
 An MVP would mean that:
 * I can see the current lap time of a car.
